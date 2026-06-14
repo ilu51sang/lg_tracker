@@ -221,12 +221,26 @@ modded class SCR_BaseGameMode
 		json = json + ", \"type\": \"map_update\"";
 
 		string mapName = "Eden";
-		float mapSize = 12800.0;
-		BaseWorld world = GetGame().GetWorld();
-		if (world)
+		ResourceName worldFile = GetGame().GetWorldFile();
+		if (worldFile != "")
 		{
-			mapName = world.GetName();
-			mapSize = world.GetWorldSize();
+			int lastSlash = worldFile.LastIndexOf("/");
+			int lastDot = worldFile.LastIndexOf(".");
+			if (lastSlash != -1 && lastDot != -1 && lastDot > lastSlash)
+			{
+				mapName = worldFile.Substring(lastSlash + 1, lastDot - lastSlash - 1);
+			}
+			else
+			{
+				mapName = worldFile;
+			}
+		}
+
+		float mapSize = 12800.0;
+		MapEntity mapEnt = MapEntity.Get();
+		if (mapEnt)
+		{
+			mapSize = mapEnt.Size()[0];
 		}
 
 		json = json + ", \"mapName\": \"" + EscapeJson(mapName) + "\"";
@@ -803,8 +817,10 @@ modded class SCR_BaseGameMode
 		if (cmdStart == -1) return;
 		
 		cmdStart += 12; // Longueur de `"commands":[`
-		int cmdEnd = data.IndexOf("]", cmdStart);
-		if (cmdEnd == -1) return;
+		string searchBlock = data.Substring(cmdStart, data.Length() - cmdStart);
+		int relativeEnd = searchBlock.IndexOf("]");
+		if (relativeEnd == -1) return;
+		int cmdEnd = cmdStart + relativeEnd;
 		
 		string commandsBlock = data.Substring(cmdStart, cmdEnd - cmdStart);
 		if (commandsBlock == "" || commandsBlock == "\"\"") return;
@@ -853,11 +869,7 @@ modded class SCR_BaseGameMode
 		
 		if (action == "announce")
 		{
-			BaseChatEntity chat = GetGame().GetChat();
-			if (chat)
-			{
-				chat.SendSystemMessage("[ADMIN] " + remainder);
-			}
+			BroadcastSystemMessage("[ADMIN] " + remainder);
 		}
 		else if (action == "kick")
 		{
@@ -867,9 +879,7 @@ modded class SCR_BaseGameMode
 			{
 				Print("TRACKER : 🥾 Expulsion du joueur " + targetName + " (ID: " + targetId.ToString() + ")");
 				GetGame().GetPlayerManager().KickPlayer(targetId, 0, 0); // Kick avec cause 0 (Defaut)
-				
-				BaseChatEntity chat = GetGame().GetChat();
-				if (chat) chat.SendSystemMessage("[ADMIN] " + targetName + " a été exclu du serveur.");
+				BroadcastSystemMessage("[ADMIN] " + targetName + " a été exclu du serveur.");
 			}
 			else
 			{
@@ -888,8 +898,45 @@ modded class SCR_BaseGameMode
 			if (targetId != -1)
 			{
 				Print("TRACKER : ⚠️ Avertissement pour " + targetName + " : " + msg);
-				BaseChatEntity chat = GetGame().GetChat();
-				if (chat) chat.SendSystemMessage("[ATTENTION] " + targetName + " : " + msg);
+				SendSystemMessageToPlayer(targetId, "[ATTENTION] " + targetName + " : " + msg);
+			}
+		}
+	}
+
+	void BroadcastSystemMessage(string msg)
+	{
+		PlayerManager pm = GetGame().GetPlayerManager();
+		if (!pm) return;
+		
+		array<int> playerIds = new array<int>();
+		pm.GetPlayers(playerIds);
+		
+		foreach (int playerId : playerIds)
+		{
+			PlayerController pc = pm.GetPlayerController(playerId);
+			if (pc)
+			{
+				SCR_ChatComponent chatComp = SCR_ChatComponent.Cast(pc.FindComponent(SCR_ChatComponent));
+				if (chatComp)
+				{
+					chatComp.Rpc(chatComp.RpcClient_ShowSystemMessage, msg);
+				}
+			}
+		}
+	}
+
+	void SendSystemMessageToPlayer(int playerId, string msg)
+	{
+		PlayerManager pm = GetGame().GetPlayerManager();
+		if (!pm) return;
+		
+		PlayerController pc = pm.GetPlayerController(playerId);
+		if (pc)
+		{
+			SCR_ChatComponent chatComp = SCR_ChatComponent.Cast(pc.FindComponent(SCR_ChatComponent));
+			if (chatComp)
+			{
+				chatComp.Rpc(chatComp.RpcClient_ShowSystemMessage, msg);
 			}
 		}
 	}
@@ -951,6 +998,12 @@ modded class SCR_ChatComponent
 
 		Print("TRACKER DEBUG : Server received chat RPC: " + msg + " from player " + senderId.ToString());
 		ProcessChatMessageServer(msg, channelId, pc);
+	}
+
+	[RplRpc(RplChannel.Reliable, RplRcver.Owner)]
+	void RpcClient_ShowSystemMessage(string msg)
+	{
+		ShowMessage(msg);
 	}
 
 	void ProcessChatMessageServer(string msg, int channelId, PlayerController pc)

@@ -81,15 +81,14 @@ async function mettreAJourEmbedCompteur() {
         const totalCount = isOnline ? serverData.joueursCount : 0;
 
         const description = isOnline 
-            ? `🟢 **Serveur en ligne**\n\n🇺🇸 **US Army** : **${usCount}** joueur(s)\n☭ **URSS** : **${urssCount}** joueur(s)\n🔰 **FIA** : **${fiaCount}** joueur(s)\n\n👥 **Total** : **${totalCount}** joueur(s)`
-            : `🔴 **Serveur hors ligne**\n\n🇺🇸 **US Army** : **0** joueur(s)\n☭ **URSS** : **0** joueur(s)\n🔰 **FIA** : **0** joueur(s)\n\n👥 **Total** : **0** joueur(s)`;
+            ? `🟢 **Serveur en ligne**\n\n🇺🇸 **US Army** : ${usCount} joueur(s)\n☭ **URSS** : ${urssCount} joueur(s)\n🔰 **FIA** : ${fiaCount} joueur(s)\n\n👥 **Total** : ${totalCount} joueur(s)`
+            : `🔴 **Serveur hors ligne**\n\n🇺🇸 **US Army** : 0 joueur(s)\n☭ **URSS** : 0 joueur(s)\n🔰 **FIA** : 0 joueur(s)\n\n👥 **Total** : 0 joueur(s)`;
 
         const embed = {
             title: "État du Serveur",
             description: description,
             color: isOnline ? 3066993 : 15158332, // Vert / Rouge
-            timestamp: new Date().toISOString(),
-            footer: { text: "Dernière mise à jour" }
+            timestamp: new Date().toISOString()
         };
 
         // Récupérer les 10 derniers messages pour trouver le message du bot
@@ -214,17 +213,16 @@ let dernierEnregistrementMetrique = 0;
 async function enregistrerMetriqueSiBesoin(force = false) {
     const maintenant = Date.now();
     if (force || (maintenant - dernierEnregistrementMetrique >= 300000)) { // 5 minutes
-        if (serverData.status === "online") {
-            const playerCount = serverData.joueursCount || 0;
-            const usCount = (serverData.equipes && serverData.equipes.US) ? serverData.equipes.US.length : 0;
-            const ussrCount = (serverData.equipes && serverData.equipes.URSS) ? serverData.equipes.URSS.length : 0;
-            try {
-                await addMetric(playerCount, usCount, ussrCount);
-                dernierEnregistrementMetrique = maintenant;
-                console.log(`📊 [METRIC SAVED] Actifs: ${playerCount} (US: ${usCount}, URSS: ${ussrCount})`);
-            } catch (err) {
-                console.error("❌ Erreur lors de l'enregistrement de la métrique périodique :", err.message);
-            }
+        const isOnline = serverData.status === "online";
+        const playerCount = isOnline ? (serverData.joueursCount || 0) : 0;
+        const usCount = isOnline ? ((serverData.equipes && serverData.equipes.US) ? serverData.equipes.US.length : 0) : 0;
+        const ussrCount = isOnline ? ((serverData.equipes && serverData.equipes.URSS) ? serverData.equipes.URSS.length : 0) : 0;
+        try {
+            await addMetric(playerCount, usCount, ussrCount);
+            dernierEnregistrementMetrique = maintenant;
+            console.log(`📊 [METRIC SAVED] Actifs: ${playerCount} (US: ${usCount}, URSS: ${ussrCount})`);
+        } catch (err) {
+            console.error("❌ Erreur lors de l'enregistrement de la métrique périodique :", err.message);
         }
     }
 }
@@ -270,7 +268,7 @@ app.post('/api/arma-event', async (req, res) => {
         }
         activePlayerSessions = {};
 
-        serverData.killfeed.unshift({ horaire: new Date().toLocaleTimeString('fr-FR', { timeZone: 'Europe/Paris' }), message: "🔴 Le serveur a été arrêté proprement." });
+        serverData.killfeed.unshift({ horaire: new Date().toISOString(), message: "🔴 Le serveur a été arrêté proprement." });
         if (serverData.killfeed.length > 30) serverData.killfeed.pop();
 
         await logSystemEvent("offline", null, "Le serveur a été arrêté proprement.");
@@ -417,7 +415,7 @@ app.post('/api/arma-event', async (req, res) => {
             isTK = true;
         }
 
-        serverData.killfeed.unshift({ horaire: new Date().toLocaleTimeString('fr-FR', { timeZone: 'Europe/Paris' }), message: isTK ? `⚠️ [TEAMKILL] ${detail}` : `💀 ${detail}` });
+        serverData.killfeed.unshift({ horaire: new Date().toISOString(), message: isTK ? `⚠️ [TEAMKILL] ${detail}` : `💀 ${detail}` });
         if (serverData.killfeed.length > 30) serverData.killfeed.pop();
 
         // ---- ENREGISTREMENT DES STATS DANS LA BASE DE DONNÉES ----
@@ -465,7 +463,7 @@ app.post('/api/arma-event', async (req, res) => {
         let channelName = killer || "Global";
         let message = typeTir || "";
         serverData.chatfeed.unshift({
-            horaire: new Date().toLocaleTimeString('fr-FR', { timeZone: 'Europe/Paris' }),
+            horaire: new Date().toISOString(),
             player: player,
             faction: faction,
             channel: channelName,
@@ -485,7 +483,7 @@ app.post('/api/arma-event', async (req, res) => {
         let prevFaction = killer || "Aucune";
         
         serverData.killfeed.unshift({
-            horaire: new Date().toLocaleTimeString('fr-FR', { timeZone: 'Europe/Paris' }),
+            horaire: new Date().toISOString(),
             message: `🚩 [CAPTURE] La base de ${baseName} a été capturée par les forces de ${newFaction} (auparavant contrôlée par ${prevFaction}).`
         });
         if (serverData.killfeed.length > 30) serverData.killfeed.pop();
@@ -510,7 +508,7 @@ app.post('/api/arma-event', async (req, res) => {
         let occupants = killer || "Aucun occupant";
 
         serverData.killfeed.unshift({
-            horaire: new Date().toLocaleTimeString('fr-FR', { timeZone: 'Europe/Paris' }),
+            horaire: new Date().toISOString(),
             message: `💥 [DÉTRUIT] Le véhicule ${vehicleName} (${vehicleFaction}) a été détruit. Équipage : ${occupants}.`
         });
         if (serverData.killfeed.length > 30) serverData.killfeed.pop();

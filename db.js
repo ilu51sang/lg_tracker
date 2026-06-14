@@ -80,6 +80,7 @@ async function initDatabase() {
             teamkills INTEGER NOT NULL DEFAULT 0,
             captures INTEGER NOT NULL DEFAULT 0,
             vehicles_destroyed INTEGER NOT NULL DEFAULT 0,
+            playtime INTEGER NOT NULL DEFAULT 0,
             updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
         );
     `;
@@ -89,16 +90,19 @@ async function initDatabase() {
         try { await mysqlPool.query("ALTER TABLE leaderboard ADD COLUMN teamkills INTEGER NOT NULL DEFAULT 0;"); } catch(e){}
         try { await mysqlPool.query("ALTER TABLE leaderboard ADD COLUMN captures INTEGER NOT NULL DEFAULT 0;"); } catch(e){}
         try { await mysqlPool.query("ALTER TABLE leaderboard ADD COLUMN vehicles_destroyed INTEGER NOT NULL DEFAULT 0;"); } catch(e){}
+        try { await mysqlPool.query("ALTER TABLE leaderboard ADD COLUMN playtime INTEGER NOT NULL DEFAULT 0;"); } catch(e){}
     } else if (isPostgres) {
         await pgPool.query(query);
         try { await pgPool.query("ALTER TABLE leaderboard ADD COLUMN IF NOT EXISTS teamkills INTEGER NOT NULL DEFAULT 0;"); } catch(e){}
         try { await pgPool.query("ALTER TABLE leaderboard ADD COLUMN IF NOT EXISTS captures INTEGER NOT NULL DEFAULT 0;"); } catch(e){}
         try { await pgPool.query("ALTER TABLE leaderboard ADD COLUMN IF NOT EXISTS vehicles_destroyed INTEGER NOT NULL DEFAULT 0;"); } catch(e){}
+        try { await pgPool.query("ALTER TABLE leaderboard ADD COLUMN IF NOT EXISTS playtime INTEGER NOT NULL DEFAULT 0;"); } catch(e){}
     } else {
         dbSqlite.exec(query);
         try { dbSqlite.exec("ALTER TABLE leaderboard ADD COLUMN teamkills INTEGER NOT NULL DEFAULT 0;"); } catch(e){}
         try { dbSqlite.exec("ALTER TABLE leaderboard ADD COLUMN captures INTEGER NOT NULL DEFAULT 0;"); } catch(e){}
         try { dbSqlite.exec("ALTER TABLE leaderboard ADD COLUMN vehicles_destroyed INTEGER NOT NULL DEFAULT 0;"); } catch(e){}
+        try { dbSqlite.exec("ALTER TABLE leaderboard ADD COLUMN playtime INTEGER NOT NULL DEFAULT 0;"); } catch(e){}
         await migrateFromLegacyJsonIfNeeded();
     }
 }
@@ -142,7 +146,7 @@ async function migrateFromLegacyJsonIfNeeded() {
 
 async function getLeaderboardObject() {
     const leaderboard = {};
-    const sql = 'SELECT player_name, kills, deaths, teamkills, captures, vehicles_destroyed FROM leaderboard';
+    const sql = 'SELECT player_name, kills, deaths, teamkills, captures, vehicles_destroyed, playtime FROM leaderboard';
 
     if (isMysql) {
         const [rows] = await mysqlPool.query(sql);
@@ -152,7 +156,8 @@ async function getLeaderboardObject() {
                 morts: row.deaths,
                 teamkills: row.teamkills,
                 captures: row.captures,
-                vehicles_destroyed: row.vehicles_destroyed
+                vehicles_destroyed: row.vehicles_destroyed,
+                playtime: row.playtime || 0
             };
         }
     } else if (isPostgres) {
@@ -163,7 +168,8 @@ async function getLeaderboardObject() {
                 morts: row.deaths,
                 teamkills: row.teamkills,
                 captures: row.captures,
-                vehicles_destroyed: row.vehicles_destroyed
+                vehicles_destroyed: row.vehicles_destroyed,
+                playtime: row.playtime || 0
             };
         }
     } else {
@@ -174,7 +180,8 @@ async function getLeaderboardObject() {
                 morts: row.deaths,
                 teamkills: row.teamkills,
                 captures: row.captures,
-                vehicles_destroyed: row.vehicles_destroyed
+                vehicles_destroyed: row.vehicles_destroyed,
+                playtime: row.playtime || 0
             };
         }
     }
@@ -312,6 +319,28 @@ async function addVehicleDestroyed(playerName) {
     }
 }
 
+async function addPlaytime(playerName, seconds) {
+    if (isMysql) {
+        await mysqlPool.query(`
+            UPDATE leaderboard
+            SET playtime = playtime + ?, updated_at = CURRENT_TIMESTAMP
+            WHERE player_name = ?
+        `, [seconds, playerName]);
+    } else if (isPostgres) {
+        await pgPool.query(`
+            UPDATE leaderboard
+            SET playtime = playtime + $1, updated_at = CURRENT_TIMESTAMP
+            WHERE player_name = $2
+        `, [seconds, playerName]);
+    } else {
+        dbSqlite.prepare(`
+            UPDATE leaderboard
+            SET playtime = playtime + ?, updated_at = CURRENT_TIMESTAMP
+            WHERE player_name = ?
+        `).run(seconds, playerName);
+    }
+}
+
 module.exports = {
     initDatabase,
     getLeaderboardObject,
@@ -320,5 +349,6 @@ module.exports = {
     addDeath,
     addTeamkill,
     addCapture,
-    addVehicleDestroyed
+    addVehicleDestroyed,
+    addPlaytime
 };

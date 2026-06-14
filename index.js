@@ -11,7 +11,8 @@ const {
     addDeath,
     addTeamkill,
     addCapture,
-    addVehicleDestroyed
+    addVehicleDestroyed,
+    addPlaytime
 } = require('./db');
 
 // Lecture des variables d'environnement
@@ -23,6 +24,7 @@ const DISCORD_CHAT_WEBHOOK_URL = process.env.DISCORD_CHAT_WEBHOOK_URL || "";
 // Suivi d'état session & anti-griefing
 let estPrecedemmentHorsLigne = true;
 let sessionTeamkills = {};
+let activePlayerSessions = {};
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -116,13 +118,22 @@ async function envoyerChatDiscord(nomJoueur, faction, canal, message) {
     else if (faction === "USSR") factionEmoji = "☭";
     else if (faction === "FIA") factionEmoji = "🔰";
 
-    const content = `[${canal}] **${factionEmoji} ${nomJoueur}** : ${message}`;
+    // US (Blue/3447003), USSR (Red/15158332), Others (Green/3066993)
+    const color = faction === "US" ? 3447003 : (faction === "USSR" ? 15158332 : 3066993);
+
+    const payload = {
+        embeds: [{
+            description: `💬 **[${canal}]** ${factionEmoji} **${nomJoueur}** : ${message}`,
+            color: color,
+            timestamp: new Date().toISOString()
+        }]
+    };
 
     try {
         await fetch(DISCORD_CHAT_WEBHOOK_URL, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ content: content })
+            body: JSON.stringify(payload)
         });
     } catch (err) {
         console.error("❌ Erreur lors de l'envoi du message chat sur Discord :", err.message);
@@ -152,6 +163,23 @@ app.post('/api/arma-event', async (req, res) => {
         serverData.joueursCount = 0;
         serverData.equipes.US = [];
         serverData.equipes.URSS = [];
+
+        // Sauvegarde de fin de session pour tous les joueurs actifs
+        for (const player in activePlayerSessions) {
+            const elapsedSeconds = Math.round((Date.now() - activePlayerSessions[player]) / 1000);
+            if (elapsedSeconds > 0) {
+                try {
+                    await addPlaytime(player, elapsedSeconds);
+                    if (leaderboard[player]) {
+                        leaderboard[player].playtime = (leaderboard[player].playtime || 0) + elapsedSeconds;
+                    }
+                } catch (e) {
+                    console.error(`Error saving offline playtime for ${player}:`, e);
+                }
+            }
+        }
+        activePlayerSessions = {};
+
         serverData.killfeed.unshift({ horaire: new Date().toLocaleTimeString('fr-FR'), message: "🔴 Le serveur a été arrêté proprement." });
         if (serverData.killfeed.length > 30) serverData.killfeed.pop();
 
@@ -181,6 +209,23 @@ app.post('/api/arma-event', async (req, res) => {
 
     // Si c'est un heartbeat du serveur
     if (type === "heartbeat") {
+        // Sauvegarde incrémentale du temps de jeu pour les joueurs actifs
+        const maintenant = Date.now();
+        for (const player in activePlayerSessions) {
+            const elapsedSeconds = Math.round((maintenant - activePlayerSessions[player]) / 1000);
+            if (elapsedSeconds >= 10) {
+                activePlayerSessions[player] = maintenant; // reset timer
+                try {
+                    await addPlaytime(player, elapsedSeconds);
+                    if (leaderboard[player]) {
+                        leaderboard[player].playtime = (leaderboard[player].playtime || 0) + elapsedSeconds;
+                    }
+                } catch (e) {
+                    console.error(`Error saving periodic playtime for ${player}:`, e);
+                }
+            }
+        }
+
         const cmds = [...pendingCommands];
         pendingCommands = []; // On vide la file
         res.status(200).send({ message: "OK", commands: cmds });
@@ -195,6 +240,21 @@ app.post('/api/arma-event', async (req, res) => {
             players: req.body.players || [],
             bases: req.body.bases || []
         };
+
+        // Initialiser la session des joueurs connectés si non encore suivis
+        const maintenant = Date.now();
+        if (req.body.players && Array.isArray(req.body.players)) {
+            for (const p of req.body.players) {
+                const pName = p.name;
+                if (pName && pName !== "IA / Bot" && pName !== "Lui-meme" && pName !== "Un sifflement dans le noir" && !pName.startsWith("Joueur_")) {
+                    await checkAndRegisterPlayer(pName);
+                    if (!activePlayerSessions[pName]) {
+                        activePlayerSessions[pName] = maintenant;
+                    }
+                }
+            }
+        }
+
         res.status(200).send({ message: "OK" });
         return;
     }
@@ -203,6 +263,7 @@ app.post('/api/arma-event', async (req, res) => {
 
     if (type === "connexion" && nomJoueur) {
         await checkAndRegisterPlayer(nomJoueur);
+        activePlayerSessions[nomJoueur] = Date.now(); // Démarrer le suivi de session
         if (faction && serverData.equipes[faction] && !serverData.equipes[faction].includes(nomJoueur)) {
             serverData.equipes[faction].push(nomJoueur);
 
@@ -219,6 +280,23 @@ app.post('/api/arma-event', async (req, res) => {
     if (type === "deconnexion" && nomJoueur) {
         serverData.equipes.US = serverData.equipes.US.filter(p => p !== nomJoueur);
         serverData.equipes.URSS = serverData.equipes.URSS.filter(p => p !== nomJoueur);
+
+        // Sauvegarder le temps de jeu accumulé sur déconnexion
+        if (activePlayerSessions[nomJoueur]) {
+            const elapsedSeconds = Math.round((Date.now() - activePlayerSessions[nomJoueur]) / 1000);
+            delete activePlayerSessions[nomJoueur];
+            if (elapsedSeconds > 0) {
+                try {
+                    await addPlaytime(nomJoueur, elapsedSeconds);
+                    if (leaderboard[nomJoueur]) {
+                        leaderboard[nomJoueur].playtime = (leaderboard[nomJoueur].playtime || 0) + elapsedSeconds;
+                    }
+                } catch (e) {
+                    console.error(`Error saving disconnect playtime for ${nomJoueur}:`, e);
+                }
+            }
+        }
+
         envoyerLogDiscord("📤 Déconnexion Opérateur", `**${nomJoueur}** a quitté la zone.`, 9807270);
         rafraichirSalonCompteur();
     }
@@ -392,7 +470,7 @@ app.post('/api/admin/command', (req, res) => {
         leaderboard = await getLeaderboardObject();
         
         // Surveillance en arrière-plan (Watchdog) pour perte de signal satellite
-        setInterval(() => {
+        setInterval(async () => {
             const maintenant = Date.now();
             if (serverData.lastHeartbeat > 0 && (maintenant - serverData.lastHeartbeat > 40000)) {
                 if (!estPrecedemmentHorsLigne) {
@@ -401,6 +479,23 @@ app.post('/api/admin/command', (req, res) => {
                     serverData.joueursCount = 0;
                     serverData.equipes.US = [];
                     serverData.equipes.URSS = [];
+                    
+                    // Sauvegarder le temps accumulé avant de couper
+                    for (const player in activePlayerSessions) {
+                        const elapsedSeconds = Math.round((maintenant - activePlayerSessions[player]) / 1000);
+                        if (elapsedSeconds > 0) {
+                            try {
+                                await addPlaytime(player, elapsedSeconds);
+                                if (leaderboard[player]) {
+                                    leaderboard[player].playtime = (leaderboard[player].playtime || 0) + elapsedSeconds;
+                                }
+                            } catch (e) {
+                                console.error(`Error saving watchdog playtime for ${player}:`, e);
+                            }
+                        }
+                    }
+                    activePlayerSessions = {};
+                    
                     sessionTeamkills = {};
                     rafraichirSalonCompteur();
                     

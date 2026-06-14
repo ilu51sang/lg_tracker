@@ -16,7 +16,19 @@ const {
     addLog,
     getLogs,
     addMetric,
-    getMetrics
+    getMetrics,
+    addNote,
+    getNotes,
+    addSanction,
+    getSanctions,
+    getPlayerProfile,
+    addToWatchlist,
+    removeFromWatchlist,
+    getWatchlist,
+    isOnWatchlist,
+    getPeakPlayers,
+    getPeakHours,
+    getAllSanctions
 } = require('./db');
 
 // Lecture des variables d'environnement
@@ -29,6 +41,12 @@ const DISCORD_CHAT_WEBHOOK_URL = process.env.DISCORD_CHAT_WEBHOOK_URL || "";
 let estPrecedemmentHorsLigne = true;
 let sessionTeamkills = {};
 let activePlayerSessions = {};
+
+// Suivi de session pour le rapport de fin
+let sessionStartTime = 0;
+let sessionKillCount = 0;
+let sessionTKCount = 0;
+let sessionConnections = new Set();
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -274,6 +292,24 @@ app.post('/api/arma-event', async (req, res) => {
         await logSystemEvent("offline", null, "Le serveur a été arrêté proprement.");
         await rafraichirSalonCompteur(true);
 
+        // Rapport de session avant notification Discord
+        if (sessionStartTime > 0) {
+            const dureeMs = Date.now() - sessionStartTime;
+            const dureeMin = Math.round(dureeMs / 60000);
+            const heures = Math.floor(dureeMin / 60);
+            const minutes = dureeMin % 60;
+            envoyerLogDiscord(
+                "📊 Rapport de Session",
+                `La session est terminée après **${heures}h${minutes.toString().padStart(2, '0')}**.`,
+                3447003, // Bleu
+                [
+                    { name: "👥 Connexions", value: `${sessionConnections.size} joueur(s)`, inline: true },
+                    { name: "⚔️ Kills", value: `${sessionKillCount}`, inline: true },
+                    { name: "⚠️ Teamkills", value: `${sessionTKCount}`, inline: true }
+                ]
+            );
+        }
+
         envoyerLogDiscord(
             "🔴 Liaison Satellite Interrompue",
             "Le serveur Arma Reforger a été **arrêté proprement**.",
@@ -290,6 +326,11 @@ app.post('/api/arma-event', async (req, res) => {
             estPrecedemmentHorsLigne = false;
             serverData.status = "online";
             sessionTeamkills = {};
+            // Initialisation des compteurs de session
+            sessionStartTime = Date.now();
+            sessionKillCount = 0;
+            sessionTKCount = 0;
+            sessionConnections = new Set();
             await logSystemEvent("online", null, "Le serveur est désormais actif et connecté au Centre Tactique.");
             await rafraichirSalonCompteur(true);
             await enregistrerMetriqueSiBesoin(true);
@@ -374,7 +415,22 @@ app.post('/api/arma-event', async (req, res) => {
     if (type === "connexion" && nomJoueur) {
         await checkAndRegisterPlayer(nomJoueur);
         activePlayerSessions[nomJoueur] = Date.now(); // Démarrer le suivi de session
+        sessionConnections.add(nomJoueur); // Compteur de session
         await logSystemEvent("connexion", nomJoueur, `A rejoint la zone (Faction: ${faction || 'Inconnue'})`);
+
+        // Alerte watchlist si le joueur est surveillé
+        try {
+            const surveille = await isOnWatchlist(nomJoueur);
+            if (surveille) {
+                envoyerLogDiscord(
+                    "🚨 ALERTE WATCHLIST",
+                    `⚠️ Le joueur surveillé **${nomJoueur}** vient de se connecter !`,
+                    16753920 // Orange
+                );
+            }
+        } catch (e) {
+            console.error(`❌ Erreur lors de la vérification watchlist pour ${nomJoueur}:`, e.message);
+        }
         
         let factionKey = faction;
         if (faction === "USSR") factionKey = "URSS";
@@ -437,6 +493,10 @@ app.post('/api/arma-event', async (req, res) => {
 
         serverData.killfeed.unshift({ horaire: new Date().toISOString(), message: isTK ? `⚠️ [TEAMKILL] ${detail}` : `💀 ${detail}` });
         if (serverData.killfeed.length > 30) serverData.killfeed.pop();
+
+        // Incrémenter les compteurs de session
+        sessionKillCount++;
+        if (isTK) sessionTKCount++;
 
         // ---- ENREGISTREMENT DES STATS DANS LA BASE DE DONNÉES ----
         if (nomJoueur && leaderboard[nomJoueur]) {
@@ -571,13 +631,13 @@ app.get('/api/stats', (req, res) => {
 
 // --- ROUTES ADMIN POUR LES LOGS ET LES METRIQUES ---
 app.get('/api/admin/logs', async (req, res) => {
-    const { password, limit, filter, search } = req.query;
+    const { password, limit, filter, search, startDate, endDate } = req.query;
     if (password !== "admin") {
         return res.status(403).json({ error: "Mot de passe admin invalide" });
     }
     try {
         const limitInt = parseInt(limit) || 100;
-        const logs = await getLogs(limitInt, filter || "All", search || "");
+        const logs = await getLogs(limitInt, filter || "All", search || "", startDate || "", endDate || "");
         
         // Normaliser les dates pour forcer le format ISO UTC (notamment pour SQLite)
         const formattedLogs = logs.map(log => {
@@ -626,8 +686,40 @@ app.get('/api/admin/metrics', async (req, res) => {
     }
 });
 
+// --- ROUTES ADMIN POUR LES PEAKS ET SANCTIONS GENERALES ---
+app.get('/api/admin/stats-summary', async (req, res) => {
+    const { password } = req.query;
+    if (password !== "admin") {
+        return res.status(403).json({ error: "Mot de passe admin invalide" });
+    }
+    try {
+        const peaks = await getPeakPlayers();
+        const peakHours = await getPeakHours();
+        res.json({ peaks, peakHours });
+    } catch (err) {
+        console.error("❌ Erreur lors de la récupération du résumé de stats :", err.message);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.get('/api/admin/sanctions-history', async (req, res) => {
+    const { password, limit } = req.query;
+    if (password !== "admin") {
+        return res.status(403).json({ error: "Mot de passe admin invalide" });
+    }
+    try {
+        const limitInt = parseInt(limit) || 100;
+        const sanctions = await getAllSanctions(limitInt);
+        const formatted = sanctions.map(s => ({ ...s, created_at: normaliserDate(s.created_at) }));
+        res.json(formatted);
+    } catch (err) {
+        console.error("❌ Erreur lors de la récupération de l'historique des sanctions :", err.message);
+        res.status(500).json({ error: err.message });
+    }
+});
+
 // --- ROUTE ADMIN : QUEUE DES COMMANDES RCON ---
-app.post('/api/admin/command', (req, res) => {
+app.post('/api/admin/command', async (req, res) => {
     const { password, action, target, message } = req.body;
     if (password !== "admin") {
         return res.status(403).json({ error: "Mot de passe admin invalide" });
@@ -650,7 +742,153 @@ app.post('/api/admin/command', (req, res) => {
 
     pendingCommands.push(cmdString);
     console.log(`📡 [ADMIN COMMAND QUEUED] : ${cmdString}`);
+
+    // Enregistrer la sanction automatiquement
+    try {
+        if (action === "kick" && target) {
+            await addSanction(target, 'kick', 'Kicked via RCON');
+        } else if (action === "warn" && target) {
+            await addSanction(target, 'warn', message || 'Avertissement admin');
+        }
+    } catch (e) {
+        console.error(`❌ Erreur lors de l'enregistrement de la sanction :`, e.message);
+    }
+
     res.json({ status: "success", command: cmdString });
+});
+
+// --- Fonction utilitaire : normalisation des dates (SQLite => ISO) ---
+function normaliserDate(dateVal) {
+    if (typeof dateVal === 'string' && !dateVal.includes('T') && !dateVal.includes('Z')) {
+        return dateVal.replace(' ', 'T') + 'Z';
+    }
+    return typeof dateVal === 'string' ? dateVal : dateVal.toISOString();
+}
+
+// --- ROUTES ADMIN : PROFIL JOUEUR, NOTES, WATCHLIST, SANCTIONS ---
+
+// Profil complet d'un joueur
+app.get('/api/admin/player/:name', async (req, res) => {
+    const { password } = req.query;
+    if (password !== "admin") {
+        return res.status(403).json({ error: "Mot de passe admin invalide" });
+    }
+    try {
+        const profile = await getPlayerProfile(req.params.name);
+        // Normaliser les dates dans logs, notes et sanctions
+        if (profile.logs) {
+            profile.logs = profile.logs.map(l => ({ ...l, created_at: normaliserDate(l.created_at) }));
+        }
+        if (profile.notes) {
+            profile.notes = profile.notes.map(n => ({ ...n, created_at: normaliserDate(n.created_at) }));
+        }
+        if (profile.sanctions) {
+            profile.sanctions = profile.sanctions.map(s => ({ ...s, created_at: normaliserDate(s.created_at) }));
+        }
+        res.json(profile);
+    } catch (err) {
+        console.error("❌ Erreur lors de la récupération du profil joueur :", err.message);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Ajouter une note
+app.post('/api/admin/notes', async (req, res) => {
+    const { password, player_name, note } = req.body;
+    if (password !== "admin") {
+        return res.status(403).json({ error: "Mot de passe admin invalide" });
+    }
+    if (!player_name || !note) {
+        return res.status(400).json({ error: "player_name et note sont requis" });
+    }
+    try {
+        await addNote(player_name, note);
+        res.json({ status: "success" });
+    } catch (err) {
+        console.error("❌ Erreur lors de l'ajout de la note :", err.message);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Récupérer les notes d'un joueur
+app.get('/api/admin/notes/:player', async (req, res) => {
+    const { password } = req.query;
+    if (password !== "admin") {
+        return res.status(403).json({ error: "Mot de passe admin invalide" });
+    }
+    try {
+        const notes = await getNotes(req.params.player);
+        const formatted = notes.map(n => ({ ...n, created_at: normaliserDate(n.created_at) }));
+        res.json(formatted);
+    } catch (err) {
+        console.error("❌ Erreur lors de la récupération des notes :", err.message);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Récupérer la watchlist
+app.get('/api/admin/watchlist', async (req, res) => {
+    const { password } = req.query;
+    if (password !== "admin") {
+        return res.status(403).json({ error: "Mot de passe admin invalide" });
+    }
+    try {
+        const list = await getWatchlist();
+        const formatted = list.map(w => ({ ...w, created_at: normaliserDate(w.created_at) }));
+        res.json(formatted);
+    } catch (err) {
+        console.error("❌ Erreur lors de la récupération de la watchlist :", err.message);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Ajouter un joueur à la watchlist
+app.post('/api/admin/watchlist', async (req, res) => {
+    const { password, player_name, reason } = req.body;
+    if (password !== "admin") {
+        return res.status(403).json({ error: "Mot de passe admin invalide" });
+    }
+    if (!player_name) {
+        return res.status(400).json({ error: "player_name est requis" });
+    }
+    try {
+        await addToWatchlist(player_name, reason || null);
+        res.json({ status: "success" });
+    } catch (err) {
+        console.error("❌ Erreur lors de l'ajout à la watchlist :", err.message);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Retirer un joueur de la watchlist
+app.delete('/api/admin/watchlist/:player', async (req, res) => {
+    const { password } = req.query;
+    if (password !== "admin") {
+        return res.status(403).json({ error: "Mot de passe admin invalide" });
+    }
+    try {
+        await removeFromWatchlist(req.params.player);
+        res.json({ status: "success" });
+    } catch (err) {
+        console.error("❌ Erreur lors du retrait de la watchlist :", err.message);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Récupérer les sanctions d'un joueur
+app.get('/api/admin/sanctions/:player', async (req, res) => {
+    const { password } = req.query;
+    if (password !== "admin") {
+        return res.status(403).json({ error: "Mot de passe admin invalide" });
+    }
+    try {
+        const sanctions = await getSanctions(req.params.player);
+        const formatted = sanctions.map(s => ({ ...s, created_at: normaliserDate(s.created_at) }));
+        res.json(formatted);
+    } catch (err) {
+        console.error("❌ Erreur lors de la récupération des sanctions :", err.message);
+        res.status(500).json({ error: err.message });
+    }
 });
 
 // --- DÉMARRAGE ASYNCHRONE ---
@@ -691,6 +929,24 @@ app.post('/api/admin/command', (req, res) => {
                     await rafraichirSalonCompteur(true);
                     
                     await logSystemEvent("offline", null, "Signal satellite perdu (le serveur ne répond plus).");
+
+                    // Rapport de session avant notification Discord
+                    if (sessionStartTime > 0) {
+                        const dureeMs = maintenant - sessionStartTime;
+                        const dureeMin = Math.round(dureeMs / 60000);
+                        const heures = Math.floor(dureeMin / 60);
+                        const minutes = dureeMin % 60;
+                        envoyerLogDiscord(
+                            "📊 Rapport de Session",
+                            `La session est terminée après **${heures}h${minutes.toString().padStart(2, '0')}**.`,
+                            3447003, // Bleu
+                            [
+                                { name: "👥 Connexions", value: `${sessionConnections.size} joueur(s)`, inline: true },
+                                { name: "⚔️ Kills", value: `${sessionKillCount}`, inline: true },
+                                { name: "⚠️ Teamkills", value: `${sessionTKCount}`, inline: true }
+                            ]
+                        );
+                    }
                     
                     envoyerLogDiscord(
                         "⚠️ Signal Satellite Perdu",

@@ -178,6 +178,113 @@ async function initDatabase() {
         dbSqlite.exec(queryLogs);
         dbSqlite.exec(queryMetrics);
     }
+
+    // Initialisation des tables d'administration V3
+    let queryNotes = "";
+    let querySanctions = "";
+    let queryWatchlist = "";
+    if (isMysql) {
+        queryNotes = `
+            CREATE TABLE IF NOT EXISTS admin_notes (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                player_name VARCHAR(255) NOT NULL,
+                note TEXT NOT NULL,
+                admin_author VARCHAR(100) DEFAULT 'admin',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+        `;
+        querySanctions = `
+            CREATE TABLE IF NOT EXISTS admin_sanctions (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                player_name VARCHAR(255) NOT NULL,
+                action_type VARCHAR(50) NOT NULL,
+                reason TEXT,
+                admin_author VARCHAR(100) DEFAULT 'admin',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+        `;
+        queryWatchlist = `
+            CREATE TABLE IF NOT EXISTS watchlist (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                player_name VARCHAR(255) NOT NULL UNIQUE,
+                reason TEXT,
+                added_by VARCHAR(100) DEFAULT 'admin',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+        `;
+    } else if (isPostgres) {
+        queryNotes = `
+            CREATE TABLE IF NOT EXISTS admin_notes (
+                id SERIAL PRIMARY KEY,
+                player_name VARCHAR(255) NOT NULL,
+                note TEXT NOT NULL,
+                admin_author VARCHAR(100) DEFAULT 'admin',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+        `;
+        querySanctions = `
+            CREATE TABLE IF NOT EXISTS admin_sanctions (
+                id SERIAL PRIMARY KEY,
+                player_name VARCHAR(255) NOT NULL,
+                action_type VARCHAR(50) NOT NULL,
+                reason TEXT,
+                admin_author VARCHAR(100) DEFAULT 'admin',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+        `;
+        queryWatchlist = `
+            CREATE TABLE IF NOT EXISTS watchlist (
+                id SERIAL PRIMARY KEY,
+                player_name VARCHAR(255) NOT NULL UNIQUE,
+                reason TEXT,
+                added_by VARCHAR(100) DEFAULT 'admin',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+        `;
+    } else {
+        queryNotes = `
+            CREATE TABLE IF NOT EXISTS admin_notes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                player_name VARCHAR(255) NOT NULL,
+                note TEXT NOT NULL,
+                admin_author VARCHAR(100) DEFAULT 'admin',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+        `;
+        querySanctions = `
+            CREATE TABLE IF NOT EXISTS admin_sanctions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                player_name VARCHAR(255) NOT NULL,
+                action_type VARCHAR(50) NOT NULL,
+                reason TEXT,
+                admin_author VARCHAR(100) DEFAULT 'admin',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+        `;
+        queryWatchlist = `
+            CREATE TABLE IF NOT EXISTS watchlist (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                player_name VARCHAR(255) NOT NULL UNIQUE,
+                reason TEXT,
+                added_by VARCHAR(100) DEFAULT 'admin',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+        `;
+    }
+
+    if (isMysql) {
+        await mysqlPool.query(queryNotes);
+        await mysqlPool.query(querySanctions);
+        await mysqlPool.query(queryWatchlist);
+    } else if (isPostgres) {
+        await pgPool.query(queryNotes);
+        await pgPool.query(querySanctions);
+        await pgPool.query(queryWatchlist);
+    } else {
+        dbSqlite.exec(queryNotes);
+        dbSqlite.exec(querySanctions);
+        dbSqlite.exec(queryWatchlist);
+    }
 }
 
 async function migrateFromLegacyJsonIfNeeded() {
@@ -432,7 +539,7 @@ async function addLog(eventType, playerName, details) {
     }
 }
 
-async function getLogs(limit = 100, filter = "All", search = "") {
+async function getLogs(limit = 100, filter = "All", search = "", startDate = "", endDate = "") {
     let sql = 'SELECT id, event_type, player_name, details, created_at FROM system_logs';
     let conditions = [];
     let params = [];
@@ -446,6 +553,16 @@ async function getLogs(limit = 100, filter = "All", search = "") {
         const term = `%${search.trim()}%`;
         conditions.push('(player_name LIKE ? OR details LIKE ?)');
         params.push(term, term);
+    }
+
+    if (startDate && startDate.trim() !== "") {
+        conditions.push('created_at >= ?');
+        params.push(startDate + ' 00:00:00');
+    }
+
+    if (endDate && endDate.trim() !== "") {
+        conditions.push('created_at <= ?');
+        params.push(endDate + ' 23:59:59');
     }
 
     if (conditions.length > 0) {
@@ -502,6 +619,241 @@ async function getMetrics(limit = 288) {
     }
 }
 
+async function addNote(playerName, note, author = 'admin') {
+    if (isMysql) {
+        await mysqlPool.query(
+            'INSERT INTO admin_notes (player_name, note, admin_author) VALUES (?, ?, ?)',
+            [playerName, note, author]
+        );
+    } else if (isPostgres) {
+        await pgPool.query(
+            'INSERT INTO admin_notes (player_name, note, admin_author) VALUES ($1, $2, $3)',
+            [playerName, note, author]
+        );
+    } else {
+        dbSqlite.prepare(
+            'INSERT INTO admin_notes (player_name, note, admin_author) VALUES (?, ?, ?)'
+        ).run(playerName, note, author);
+    }
+}
+
+async function getNotes(playerName) {
+    const sql = 'SELECT id, player_name, note, admin_author, created_at FROM admin_notes WHERE player_name = ? ORDER BY id DESC';
+    if (isPostgres) {
+        const res = await pgPool.query(sql.replace('?', '$1'), [playerName]);
+        return res.rows;
+    } else if (isMysql) {
+        const [rows] = await mysqlPool.query(sql, [playerName]);
+        return rows;
+    } else {
+        return dbSqlite.prepare(sql).all(playerName);
+    }
+}
+
+async function addSanction(playerName, actionType, reason, author = 'admin') {
+    if (isMysql) {
+        await mysqlPool.query(
+            'INSERT INTO admin_sanctions (player_name, action_type, reason, admin_author) VALUES (?, ?, ?, ?)',
+            [playerName, actionType, reason, author]
+        );
+    } else if (isPostgres) {
+        await pgPool.query(
+            'INSERT INTO admin_sanctions (player_name, action_type, reason, admin_author) VALUES ($1, $2, $3, $4)',
+            [playerName, actionType, reason, author]
+        );
+    } else {
+        dbSqlite.prepare(
+            'INSERT INTO admin_sanctions (player_name, action_type, reason, admin_author) VALUES (?, ?, ?, ?)'
+        ).run(playerName, actionType, reason, author);
+    }
+}
+
+async function getSanctions(playerName) {
+    const sql = 'SELECT id, player_name, action_type, reason, admin_author, created_at FROM admin_sanctions WHERE player_name = ? ORDER BY id DESC';
+    if (isPostgres) {
+        const res = await pgPool.query(sql.replace('?', '$1'), [playerName]);
+        return res.rows;
+    } else if (isMysql) {
+        const [rows] = await mysqlPool.query(sql, [playerName]);
+        return rows;
+    } else {
+        return dbSqlite.prepare(sql).all(playerName);
+    }
+}
+
+async function getPlayerProfile(playerName) {
+    // 1. Stats du leaderboard
+    const sqlStats = 'SELECT player_name, kills, deaths, teamkills, captures, vehicles_destroyed, playtime, updated_at FROM leaderboard WHERE player_name = ?';
+    let stats = null;
+    if (isPostgres) {
+        const res = await pgPool.query(sqlStats.replace('?', '$1'), [playerName]);
+        stats = res.rows[0] || null;
+    } else if (isMysql) {
+        const [rows] = await mysqlPool.query(sqlStats, [playerName]);
+        stats = rows[0] || null;
+    } else {
+        stats = dbSqlite.prepare(sqlStats).get(playerName) || null;
+    }
+
+    // 2. Derniers logs (20)
+    const sqlLogs = 'SELECT id, event_type, player_name, details, created_at FROM system_logs WHERE player_name = ? ORDER BY id DESC LIMIT 20';
+    let logs = [];
+    if (isPostgres) {
+        let pgSql = sqlLogs;
+        let index = 1;
+        pgSql = pgSql.replace(/\?/g, () => `$${index++}`);
+        const res = await pgPool.query(pgSql, [playerName]);
+        logs = res.rows;
+    } else if (isMysql) {
+        const [rows] = await mysqlPool.query(sqlLogs, [playerName]);
+        logs = rows;
+    } else {
+        logs = dbSqlite.prepare(sqlLogs).all(playerName);
+    }
+
+    // 3. Notes admin
+    const notes = await getNotes(playerName);
+
+    // 4. Sanctions
+    const sanctions = await getSanctions(playerName);
+
+    return { stats, logs, notes, sanctions };
+}
+
+async function addToWatchlist(playerName, reason, addedBy = 'admin') {
+    if (isMysql) {
+        await mysqlPool.query(
+            'INSERT IGNORE INTO watchlist (player_name, reason, added_by) VALUES (?, ?, ?)',
+            [playerName, reason, addedBy]
+        );
+    } else if (isPostgres) {
+        await pgPool.query(
+            'INSERT INTO watchlist (player_name, reason, added_by) VALUES ($1, $2, $3) ON CONFLICT (player_name) DO NOTHING',
+            [playerName, reason, addedBy]
+        );
+    } else {
+        dbSqlite.prepare(
+            'INSERT OR IGNORE INTO watchlist (player_name, reason, added_by) VALUES (?, ?, ?)'
+        ).run(playerName, reason, addedBy);
+    }
+}
+
+async function removeFromWatchlist(playerName) {
+    if (isMysql) {
+        await mysqlPool.query('DELETE FROM watchlist WHERE player_name = ?', [playerName]);
+    } else if (isPostgres) {
+        await pgPool.query('DELETE FROM watchlist WHERE player_name = $1', [playerName]);
+    } else {
+        dbSqlite.prepare('DELETE FROM watchlist WHERE player_name = ?').run(playerName);
+    }
+}
+
+async function getWatchlist() {
+    const sql = 'SELECT id, player_name, reason, added_by, created_at FROM watchlist ORDER BY id DESC';
+    if (isPostgres) {
+        const res = await pgPool.query(sql);
+        return res.rows;
+    } else if (isMysql) {
+        const [rows] = await mysqlPool.query(sql);
+        return rows;
+    } else {
+        return dbSqlite.prepare(sql).all();
+    }
+}
+
+async function isOnWatchlist(playerName) {
+    const sql = 'SELECT id FROM watchlist WHERE player_name = ?';
+    if (isPostgres) {
+        const res = await pgPool.query(sql.replace('?', '$1'), [playerName]);
+        return res.rows.length > 0;
+    } else if (isMysql) {
+        const [rows] = await mysqlPool.query(sql, [playerName]);
+        return rows.length > 0;
+    } else {
+        const row = dbSqlite.prepare(sql).get(playerName);
+        return !!row;
+    }
+}
+
+async function getPeakPlayers() {
+    let sqlAllTime = 'SELECT MAX(player_count) AS peak FROM server_metrics';
+    let sqlToday = '';
+    
+    if (isPostgres) {
+        sqlToday = "SELECT MAX(player_count) AS peak FROM server_metrics WHERE created_at >= CURRENT_DATE";
+    } else if (isMysql) {
+        sqlToday = "SELECT MAX(player_count) AS peak FROM server_metrics WHERE DATE(created_at) = CURDATE()";
+    } else {
+        sqlToday = "SELECT MAX(player_count) AS peak FROM server_metrics WHERE date(created_at) = date('now')";
+    }
+    
+    let peakAllTime = 0;
+    let peakToday = 0;
+    
+    if (isPostgres) {
+        const resAll = await pgPool.query(sqlAllTime);
+        const resToday = await pgPool.query(sqlToday);
+        peakAllTime = resAll.rows[0]?.peak || 0;
+        peakToday = resToday.rows[0]?.peak || 0;
+    } else if (isMysql) {
+        const [rowsAll] = await mysqlPool.query(sqlAllTime);
+        const [rowsToday] = await mysqlPool.query(sqlToday);
+        peakAllTime = rowsAll[0]?.peak || 0;
+        peakToday = rowsToday[0]?.peak || 0;
+    } else {
+        const rowAll = dbSqlite.prepare(sqlAllTime).get();
+        const rowToday = dbSqlite.prepare(sqlToday).get();
+        peakAllTime = rowAll?.peak || 0;
+        peakToday = rowToday?.peak || 0;
+    }
+    
+    return { allTime: peakAllTime, today: peakToday };
+}
+
+async function getPeakHours() {
+    let sql = "";
+    if (isPostgres) {
+        sql = "SELECT EXTRACT(HOUR FROM created_at) AS hour_num, AVG(player_count) AS avg_players FROM server_metrics GROUP BY hour_num ORDER BY hour_num ASC";
+    } else if (isMysql) {
+        sql = "SELECT HOUR(created_at) AS hour_num, AVG(player_count) AS avg_players FROM server_metrics GROUP BY hour_num ORDER BY hour_num ASC";
+    } else {
+        sql = "SELECT CAST(strftime('%H', created_at) AS INTEGER) AS hour_num, AVG(player_count) AS avg_players FROM server_metrics GROUP BY hour_num ORDER BY hour_num ASC";
+    }
+    
+    let rows = [];
+    if (isPostgres) {
+        const res = await pgPool.query(sql);
+        rows = res.rows;
+    } else if (isMysql) {
+        const [mysqlRows] = await mysqlPool.query(sql);
+        rows = mysqlRows;
+    } else {
+        rows = dbSqlite.prepare(sql).all();
+    }
+    
+    const hoursData = Array(24).fill(0);
+    rows.forEach(r => {
+        const hr = parseInt(r.hasOwnProperty('hour_num') ? r.hour_num : (r.hasOwnProperty('HOUR') ? r.HOUR : (r.hasOwnProperty('hour') ? r.hour : 0)));
+        if (hr >= 0 && hr < 24) {
+            hoursData[hr] = Math.round((r.avg_players || 0) * 10) / 10;
+        }
+    });
+    return hoursData;
+}
+
+async function getAllSanctions(limit = 100) {
+    const sql = 'SELECT id, player_name, action_type, reason, admin_author, created_at FROM admin_sanctions ORDER BY id DESC LIMIT ?';
+    if (isPostgres) {
+        const res = await pgPool.query(sql.replace('?', '$1'), [limit]);
+        return res.rows;
+    } else if (isMysql) {
+        const [rows] = await mysqlPool.query(sql, [limit]);
+        return rows;
+    } else {
+        return dbSqlite.prepare(sql).all(limit);
+    }
+}
+
 module.exports = {
     initDatabase,
     getLeaderboardObject,
@@ -515,5 +867,17 @@ module.exports = {
     addLog,
     getLogs,
     addMetric,
-    getMetrics
+    getMetrics,
+    addNote,
+    getNotes,
+    addSanction,
+    getSanctions,
+    getPlayerProfile,
+    addToWatchlist,
+    removeFromWatchlist,
+    getWatchlist,
+    isOnWatchlist,
+    getPeakPlayers,
+    getPeakHours,
+    getAllSanctions
 };

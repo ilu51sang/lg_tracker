@@ -105,6 +105,79 @@ async function initDatabase() {
         try { dbSqlite.exec("ALTER TABLE leaderboard ADD COLUMN playtime INTEGER NOT NULL DEFAULT 0;"); } catch(e){}
         await migrateFromLegacyJsonIfNeeded();
     }
+
+    // Initialisation des nouvelles tables V2
+    let queryLogs = "";
+    let queryMetrics = "";
+    if (isMysql) {
+        queryLogs = `
+            CREATE TABLE IF NOT EXISTS system_logs (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                event_type VARCHAR(50) NOT NULL,
+                player_name VARCHAR(255),
+                details TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+        `;
+        queryMetrics = `
+            CREATE TABLE IF NOT EXISTS server_metrics (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                player_count INT NOT NULL,
+                us_count INT NOT NULL,
+                ussr_count INT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+        `;
+    } else if (isPostgres) {
+        queryLogs = `
+            CREATE TABLE IF NOT EXISTS system_logs (
+                id SERIAL PRIMARY KEY,
+                event_type VARCHAR(50) NOT NULL,
+                player_name VARCHAR(255),
+                details TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+        `;
+        queryMetrics = `
+            CREATE TABLE IF NOT EXISTS server_metrics (
+                id SERIAL PRIMARY KEY,
+                player_count INT NOT NULL,
+                us_count INT NOT NULL,
+                ussr_count INT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+        `;
+    } else {
+        queryLogs = `
+            CREATE TABLE IF NOT EXISTS system_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                event_type VARCHAR(50) NOT NULL,
+                player_name VARCHAR(255),
+                details TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+        `;
+        queryMetrics = `
+            CREATE TABLE IF NOT EXISTS server_metrics (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                player_count INTEGER NOT NULL,
+                us_count INTEGER NOT NULL,
+                ussr_count INTEGER NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+        `;
+    }
+
+    if (isMysql) {
+        await mysqlPool.query(queryLogs);
+        await mysqlPool.query(queryMetrics);
+    } else if (isPostgres) {
+        await pgPool.query(queryLogs);
+        await pgPool.query(queryMetrics);
+    } else {
+        dbSqlite.exec(queryLogs);
+        dbSqlite.exec(queryMetrics);
+    }
 }
 
 async function migrateFromLegacyJsonIfNeeded() {
@@ -341,6 +414,94 @@ async function addPlaytime(playerName, seconds) {
     }
 }
 
+async function addLog(eventType, playerName, details) {
+    if (isMysql) {
+        await mysqlPool.query(
+            'INSERT INTO system_logs (event_type, player_name, details) VALUES (?, ?, ?)',
+            [eventType, playerName, details]
+        );
+    } else if (isPostgres) {
+        await pgPool.query(
+            'INSERT INTO system_logs (event_type, player_name, details) VALUES ($1, $2, $3)',
+            [eventType, playerName, details]
+        );
+    } else {
+        dbSqlite.prepare(
+            'INSERT INTO system_logs (event_type, player_name, details) VALUES (?, ?, ?)'
+        ).run(eventType, playerName, details);
+    }
+}
+
+async function getLogs(limit = 100, filter = "All", search = "") {
+    let sql = 'SELECT id, event_type, player_name, details, created_at FROM system_logs';
+    let conditions = [];
+    let params = [];
+
+    if (filter && filter !== "All") {
+        conditions.push('event_type = ?');
+        params.push(filter);
+    }
+
+    if (search && search.trim() !== "") {
+        const term = `%${search.trim()}%`;
+        conditions.push('(player_name LIKE ? OR details LIKE ?)');
+        params.push(term, term);
+    }
+
+    if (conditions.length > 0) {
+        sql += ' WHERE ' + conditions.join(' AND ');
+    }
+
+    sql += ' ORDER BY id DESC LIMIT ?';
+    params.push(limit);
+
+    // Adapt params for PostgreSQL ($1, $2...)
+    if (isPostgres) {
+        let pgSql = sql;
+        let index = 1;
+        pgSql = pgSql.replace(/\?/g, () => `$${index++}`);
+        const res = await pgPool.query(pgSql, params);
+        return res.rows;
+    } else if (isMysql) {
+        const [rows] = await mysqlPool.query(sql, params);
+        return rows;
+    } else {
+        return dbSqlite.prepare(sql).all(params);
+    }
+}
+
+async function addMetric(playerCount, usCount, ussrCount) {
+    if (isMysql) {
+        await mysqlPool.query(
+            'INSERT INTO server_metrics (player_count, us_count, ussr_count) VALUES (?, ?, ?)',
+            [playerCount, usCount, ussrCount]
+        );
+    } else if (isPostgres) {
+        await pgPool.query(
+            'INSERT INTO server_metrics (player_count, us_count, ussr_count) VALUES ($1, $2, $3)',
+            [playerCount, usCount, ussrCount]
+        );
+    } else {
+        dbSqlite.prepare(
+            'INSERT INTO server_metrics (player_count, us_count, ussr_count) VALUES (?, ?, ?)'
+        ).run(playerCount, usCount, ussrCount);
+    }
+}
+
+async function getMetrics(limit = 288) {
+    const sql = 'SELECT id, player_count, us_count, ussr_count, created_at FROM server_metrics ORDER BY id DESC LIMIT ?';
+    if (isPostgres) {
+        const res = await pgPool.query(sql.replace('?', '$1'), [limit]);
+        return res.rows.reverse();
+    } else if (isMysql) {
+        const [rows] = await mysqlPool.query(sql, [limit]);
+        return rows.reverse();
+    } else {
+        const rows = dbSqlite.prepare(sql).all(limit);
+        return rows.reverse();
+    }
+}
+
 module.exports = {
     initDatabase,
     getLeaderboardObject,
@@ -350,5 +511,9 @@ module.exports = {
     addTeamkill,
     addCapture,
     addVehicleDestroyed,
-    addPlaytime
+    addPlaytime,
+    addLog,
+    getLogs,
+    addMetric,
+    getMetrics
 };

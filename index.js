@@ -12,7 +12,11 @@ const {
     addTeamkill,
     addCapture,
     addVehicleDestroyed,
-    addPlaytime
+    addPlaytime,
+    addLog,
+    getLogs,
+    addMetric,
+    getMetrics
 } = require('./db');
 
 // Lecture des variables d'environnement
@@ -148,6 +152,14 @@ async function checkAndRegisterPlayer(name) {
     }
 }
 
+async function logSystemEvent(type, player, details) {
+    try {
+        await addLog(type, player, details);
+    } catch (err) {
+        console.error(`❌ Erreur lors de l'écriture du log système (${type}) :`, err.message);
+    }
+}
+
 // --- ROUTE 1 : ARMA ---
 app.post('/api/arma-event', async (req, res) => {
     const { auth, type, detail, player, faction, killer, killerFaction, typeTir } = req.body;
@@ -191,6 +203,8 @@ app.post('/api/arma-event', async (req, res) => {
         serverData.killfeed.unshift({ horaire: new Date().toLocaleTimeString('fr-FR'), message: "🔴 Le serveur a été arrêté proprement." });
         if (serverData.killfeed.length > 30) serverData.killfeed.pop();
 
+        await logSystemEvent("offline", null, "Le serveur a été arrêté proprement.");
+
         envoyerLogDiscord(
             "🔴 Liaison Satellite Interrompue",
             "Le serveur Arma Reforger a été **arrêté proprement**.",
@@ -207,6 +221,7 @@ app.post('/api/arma-event', async (req, res) => {
             estPrecedemmentHorsLigne = false;
             serverData.status = "online";
             sessionTeamkills = {};
+            await logSystemEvent("online", null, "Le serveur est désormais actif et connecté au Centre Tactique.");
             envoyerLogDiscord(
                 "🟢 Liaison Satellite Établie",
                 "Le serveur Arma Reforger est désormais **actif** et connecté au Centre Tactique.",
@@ -272,6 +287,7 @@ app.post('/api/arma-event', async (req, res) => {
     if (type === "connexion" && nomJoueur) {
         await checkAndRegisterPlayer(nomJoueur);
         activePlayerSessions[nomJoueur] = Date.now(); // Démarrer le suivi de session
+        await logSystemEvent("connexion", nomJoueur, `A rejoint la zone (Faction: ${faction || 'Inconnue'})`);
         if (faction && serverData.equipes[faction] && !serverData.equipes[faction].includes(nomJoueur)) {
             serverData.equipes[faction].push(nomJoueur);
 
@@ -304,6 +320,8 @@ app.post('/api/arma-event', async (req, res) => {
                 }
             }
         }
+
+        await logSystemEvent("deconnexion", nomJoueur, "A quitté la zone");
 
         envoyerLogDiscord("📤 Déconnexion Opérateur", `**${nomJoueur}** a quitté la zone.`, 9807270);
         rafraichirSalonCompteur();
@@ -353,6 +371,8 @@ app.post('/api/arma-event', async (req, res) => {
         let typeTirNettoye = typeTir || "Inconnu";
         if (typeTirNettoye.includes("Character_")) typeTirNettoye = "Corps à Corps 🥊";
 
+        await logSystemEvent(isTK ? "teamkill" : "kill", killer || "Inconnu", `A éliminé ${nomJoueur} (${typeTirNettoye})`);
+
         envoyerLogDiscord(isTK ? "⚠️ Tir Fratricide" : "⚔️ Engagement Neutre", isTK ? "Alerte de tir fratricide !" : "Rapport d'élimination.", isTK ? 16753920 : 3447003, [
             { name: "Victime", value: `💀 **${nomJoueur}**`, inline: true },
             { name: "Tueur", value: `🔫 **${killer}**`, inline: true },
@@ -372,6 +392,8 @@ app.post('/api/arma-event', async (req, res) => {
         });
         if (serverData.chatfeed.length > 30) serverData.chatfeed.pop();
 
+        await logSystemEvent("chat", player, `[${channelName}] : ${message}`);
+
         // Relais Discord en direct
         await envoyerChatDiscord(player, faction, channelName, message);
     }
@@ -386,6 +408,8 @@ app.post('/api/arma-event', async (req, res) => {
             message: `🚩 [CAPTURE] La base de ${baseName} a été capturée par les forces de ${newFaction} (auparavant contrôlée par ${prevFaction}).`
         });
         if (serverData.killfeed.length > 30) serverData.killfeed.pop();
+
+        await logSystemEvent("capture", null, `La base de ${baseName} a été capturée par les forces de ${newFaction} (auparavant contrôlée par ${prevFaction})`);
 
         // Envoi alerte Discord
         let couleurEmbed = 10066329; // Gris
@@ -409,6 +433,8 @@ app.post('/api/arma-event', async (req, res) => {
             message: `💥 [DÉTRUIT] Le véhicule ${vehicleName} (${vehicleFaction}) a été détruit. Équipage : ${occupants}.`
         });
         if (serverData.killfeed.length > 30) serverData.killfeed.pop();
+
+        await logSystemEvent("vehicle_destroyed", occupants === "Aucun occupant" ? null : occupants, `Le véhicule ${vehicleName} (${vehicleFaction}) a été détruit. Équipage : ${occupants}`);
 
         // Envoi alerte Discord
         envoyerLogDiscord(
@@ -442,6 +468,37 @@ app.get('/api/stats', (req, res) => {
         server: serverData,
         leaderboard: leaderboard
     });
+});
+
+// --- ROUTES ADMIN POUR LES LOGS ET LES METRIQUES ---
+app.get('/api/admin/logs', async (req, res) => {
+    const { password, limit, filter, search } = req.query;
+    if (password !== "admin") {
+        return res.status(403).json({ error: "Mot de passe admin invalide" });
+    }
+    try {
+        const limitInt = parseInt(limit) || 100;
+        const logs = await getLogs(limitInt, filter || "All", search || "");
+        res.json(logs);
+    } catch (err) {
+        console.error("❌ Erreur lors de la récupération des logs :", err.message);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.get('/api/admin/metrics', async (req, res) => {
+    const { password, limit } = req.query;
+    if (password !== "admin") {
+        return res.status(403).json({ error: "Mot de passe admin invalide" });
+    }
+    try {
+        const limitInt = parseInt(limit) || 288;
+        const metrics = await getMetrics(limitInt);
+        res.json(metrics);
+    } catch (err) {
+        console.error("❌ Erreur lors de la récupération des métriques :", err.message);
+        res.status(500).json({ error: err.message });
+    }
 });
 
 // --- ROUTE ADMIN : QUEUE DES COMMANDES RCON ---
@@ -507,6 +564,8 @@ app.post('/api/admin/command', (req, res) => {
                     sessionTeamkills = {};
                     rafraichirSalonCompteur();
                     
+                    await logSystemEvent("offline", null, "Signal satellite perdu (le serveur ne répond plus).");
+                    
                     envoyerLogDiscord(
                         "⚠️ Signal Satellite Perdu",
                         "Le serveur Arma Reforger ne répond plus. Liaison interrompue.",
@@ -515,6 +574,21 @@ app.post('/api/admin/command', (req, res) => {
                 }
             }
         }, 10000);
+
+        // Enregistrement périodique des métriques d'activité toutes les 5 minutes
+        setInterval(async () => {
+            if (serverData.status === "online") {
+                const playerCount = serverData.joueursCount || 0;
+                const usCount = (serverData.equipes && serverData.equipes.US) ? serverData.equipes.US.length : 0;
+                const ussrCount = (serverData.equipes && serverData.equipes.URSS) ? serverData.equipes.URSS.length : 0;
+                try {
+                    await addMetric(playerCount, usCount, ussrCount);
+                    console.log(`📊 [METRIC SAVED] Actifs: ${playerCount} (US: ${usCount}, URSS: ${ussrCount})`);
+                } catch (err) {
+                    console.error("❌ Erreur lors de l'enregistrement de la métrique périodique :", err.message);
+                }
+            }
+        }, 300000);
 
         app.listen(PORT, () => console.log(`🤖 Cerveau V2 connecté sur le port ${PORT}`));
     } catch (err) {

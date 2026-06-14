@@ -335,9 +335,10 @@ app.post('/api/arma-event', async (req, res) => {
             bases: req.body.bases || []
         };
 
-        // Initialiser la session des joueurs connectés si non encore suivis
+        // Initialiser la session des joueurs connectés si non encore suivis et reconstruire les équipes
         const maintenant = Date.now();
         if (req.body.players && Array.isArray(req.body.players)) {
+            const tempEquipes = { US: [], URSS: [], FIA: [] };
             for (const p of req.body.players) {
                 const pName = p.name;
                 if (pName && pName !== "IA / Bot" && pName !== "Lui-meme" && pName !== "Un sifflement dans le noir" && !pName.startsWith("Joueur_")) {
@@ -345,8 +346,23 @@ app.post('/api/arma-event', async (req, res) => {
                     if (!activePlayerSessions[pName]) {
                         activePlayerSessions[pName] = maintenant;
                     }
+                    
+                    let pFaction = p.faction || "";
+                    if (pFaction === "USSR") pFaction = "URSS";
+                    
+                    if (pFaction && tempEquipes[pFaction]) {
+                        tempEquipes[pFaction].push(pName);
+                    }
                 }
             }
+            
+            serverData.equipes.US = tempEquipes.US;
+            serverData.equipes.URSS = tempEquipes.URSS;
+            serverData.equipes.FIA = tempEquipes.FIA;
+            serverData.joueursCount = serverData.equipes.US.length + serverData.equipes.URSS.length + (serverData.equipes.FIA ? serverData.equipes.FIA.length : 0);
+            
+            // Rafraîchir l'embed Discord si connecté
+            rafraichirSalonCompteur();
         }
 
         res.status(200).send({ message: "OK" });
@@ -359,8 +375,12 @@ app.post('/api/arma-event', async (req, res) => {
         await checkAndRegisterPlayer(nomJoueur);
         activePlayerSessions[nomJoueur] = Date.now(); // Démarrer le suivi de session
         await logSystemEvent("connexion", nomJoueur, `A rejoint la zone (Faction: ${faction || 'Inconnue'})`);
-        if (faction && serverData.equipes[faction] && !serverData.equipes[faction].includes(nomJoueur)) {
-            serverData.equipes[faction].push(nomJoueur);
+        
+        let factionKey = faction;
+        if (faction === "USSR") factionKey = "URSS";
+        
+        if (factionKey && serverData.equipes[factionKey] && !serverData.equipes[factionKey].includes(nomJoueur)) {
+            serverData.equipes[factionKey].push(nomJoueur);
 
             let factionLabel = "Inconnue";
             if (faction === "US") factionLabel = "🔵 OTAN";
@@ -681,9 +701,10 @@ app.post('/api/admin/command', (req, res) => {
             }
         }, 10000);
 
-        // Enregistrement périodique des métriques d'activité
+        // Enregistrement périodique des métriques d'activité et rafraîchissement Discord
         setInterval(async () => {
             await enregistrerMetriqueSiBesoin();
+            await rafraichirSalonCompteur();
         }, 60000);
 
         app.listen(PORT, () => console.log(`🤖 Cerveau V2 connecté sur le port ${PORT}`));

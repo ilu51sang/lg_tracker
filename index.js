@@ -37,9 +37,13 @@ app.use(cors());
 app.use(express.json({ type: '*/*' }));
 
 // Initialisation du Bot Discord pour le salon dynamique
-const client = new Client({ intents: [GatewayIntentBits.Guilds] });
+const client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages] });
 
 if (DISCORD_BOT_TOKEN) {
+    client.once('ready', () => {
+        console.log(`🤖 Bot Discord connecté en tant que ${client.user.tag}`);
+        rafraichirSalonCompteur(true);
+    });
     client.login(DISCORD_BOT_TOKEN).catch(err => {
         console.log("⚠️ Bot Discord non configuré ou token invalide.", err.message);
     });
@@ -57,17 +61,60 @@ let serverData = {
     status: "offline",
     lastHeartbeat: 0,
     joueursCount: 0,
-    equipes: { US: [], URSS: [] },
+    equipes: { US: [], URSS: [], FIA: [] },
     killfeed: [],
     chatfeed: [],
     map: { players: [], bases: [] }
 };
 
+// Fonction pour mettre à jour l'embed d'état du serveur
+async function mettreAJourEmbedCompteur() {
+    if (!COMPTEUR_CHANNEL_ID || !client.token) return;
+    try {
+        const channel = await client.channels.fetch(COMPTEUR_CHANNEL_ID);
+        if (!channel) return;
+
+        const isOnline = serverData.status === "online";
+        const usCount = serverData.equipes.US ? serverData.equipes.US.length : 0;
+        const urssCount = serverData.equipes.URSS ? serverData.equipes.URSS.length : 0;
+        const fiaCount = serverData.equipes.FIA ? serverData.equipes.FIA.length : 0;
+        const totalCount = isOnline ? serverData.joueursCount : 0;
+
+        const description = isOnline 
+            ? `🟢 **Serveur en ligne**\n\n🇺🇸 **US Army** : **${usCount}** joueur(s)\n☭ **URSS** : **${urssCount}** joueur(s)\n🔰 **FIA** : **${fiaCount}** joueur(s)\n\n👥 **Total** : **${totalCount}** joueur(s)`
+            : `🔴 **Serveur hors ligne**\n\n🇺🇸 **US Army** : **0** joueur(s)\n☭ **URSS** : **0** joueur(s)\n🔰 **FIA** : **0** joueur(s)\n\n👥 **Total** : **0** joueur(s)`;
+
+        const embed = {
+            title: "État du Serveur",
+            description: description,
+            color: isOnline ? 3066993 : 15158332, // Vert / Rouge
+            timestamp: new Date().toISOString(),
+            footer: { text: "Dernière mise à jour" }
+        };
+
+        // Récupérer les 10 derniers messages pour trouver le message du bot
+        const messages = await channel.messages.fetch({ limit: 10 });
+        const messageBot = messages.find(m => m.author.id === client.user.id && m.embeds.length > 0 && m.embeds[0].title === "État du Serveur");
+
+        if (messageBot) {
+            await messageBot.edit({ embeds: [embed] });
+        } else {
+            await channel.send({ embeds: [embed] });
+        }
+    } catch (err) {
+        console.error("❌ Erreur lors de la mise à jour de l'embed compteur Discord :", err.message);
+    }
+}
+
 // Fonction pour mettre à jour le nom du salon Discord (Max 1 fois toutes les 5 min à cause des limites de Discord)
 let dernierChangementSalon = 0;
-async function rafraichirSalonCompteur() {
+async function rafraichirSalonCompteur(force = false) {
     const maintenant = Date.now();
-    if (maintenant - dernierChangementSalon < 300000) return; // Sécurité anti-spam (5 minutes)
+    
+    // Toujours mettre à jour l'embed (non rate-limité comme setName)
+    await mettreAJourEmbedCompteur();
+
+    if (!force && (maintenant - dernierChangementSalon < 300000)) return; // Sécurité anti-spam (5 minutes)
 
     if (!COMPTEUR_CHANNEL_ID) {
         console.warn("⚠️ DISCORD_COMPTEUR_CHANNEL_ID manquant dans .env, impossible de rafraîchir le salon compteur.");
@@ -77,7 +124,10 @@ async function rafraichirSalonCompteur() {
     try {
         const salon = await client.channels.fetch(COMPTEUR_CHANNEL_ID);
         if (salon) {
-            await salon.setName(`👥 En Jeu : ${serverData.joueursCount} joueur${serverData.joueursCount > 1 ? 's' : ''}`);
+            const name = serverData.status === "online" 
+                ? `🟢-en-jeu-${serverData.joueursCount}-joueurs`
+                : `🔴-serveur-hors-ligne`;
+            await salon.setName(name);
             dernierChangementSalon = maintenant;
         }
     } catch (err) {
@@ -160,6 +210,25 @@ async function logSystemEvent(type, player, details) {
     }
 }
 
+let dernierEnregistrementMetrique = 0;
+async function enregistrerMetriqueSiBesoin(force = false) {
+    const maintenant = Date.now();
+    if (force || (maintenant - dernierEnregistrementMetrique >= 300000)) { // 5 minutes
+        if (serverData.status === "online") {
+            const playerCount = serverData.joueursCount || 0;
+            const usCount = (serverData.equipes && serverData.equipes.US) ? serverData.equipes.US.length : 0;
+            const ussrCount = (serverData.equipes && serverData.equipes.URSS) ? serverData.equipes.URSS.length : 0;
+            try {
+                await addMetric(playerCount, usCount, ussrCount);
+                dernierEnregistrementMetrique = maintenant;
+                console.log(`📊 [METRIC SAVED] Actifs: ${playerCount} (US: ${usCount}, URSS: ${ussrCount})`);
+            } catch (err) {
+                console.error("❌ Erreur lors de l'enregistrement de la métrique périodique :", err.message);
+            }
+        }
+    }
+}
+
 // --- ROUTE 1 : ARMA ---
 app.post('/api/arma-event', async (req, res) => {
     const { auth, type, detail, player, faction, killer, killerFaction, typeTir } = req.body;
@@ -183,6 +252,7 @@ app.post('/api/arma-event', async (req, res) => {
         serverData.joueursCount = 0;
         serverData.equipes.US = [];
         serverData.equipes.URSS = [];
+        serverData.equipes.FIA = [];
 
         // Sauvegarde de fin de session pour tous les joueurs actifs
         for (const player in activePlayerSessions) {
@@ -200,10 +270,11 @@ app.post('/api/arma-event', async (req, res) => {
         }
         activePlayerSessions = {};
 
-        serverData.killfeed.unshift({ horaire: new Date().toLocaleTimeString('fr-FR'), message: "🔴 Le serveur a été arrêté proprement." });
+        serverData.killfeed.unshift({ horaire: new Date().toLocaleTimeString('fr-FR', { timeZone: 'Europe/Paris' }), message: "🔴 Le serveur a été arrêté proprement." });
         if (serverData.killfeed.length > 30) serverData.killfeed.pop();
 
         await logSystemEvent("offline", null, "Le serveur a été arrêté proprement.");
+        await rafraichirSalonCompteur(true);
 
         envoyerLogDiscord(
             "🔴 Liaison Satellite Interrompue",
@@ -222,6 +293,8 @@ app.post('/api/arma-event', async (req, res) => {
             serverData.status = "online";
             sessionTeamkills = {};
             await logSystemEvent("online", null, "Le serveur est désormais actif et connecté au Centre Tactique.");
+            await rafraichirSalonCompteur(true);
+            await enregistrerMetriqueSiBesoin(true);
             envoyerLogDiscord(
                 "🟢 Liaison Satellite Établie",
                 "Le serveur Arma Reforger est désormais **actif** et connecté au Centre Tactique.",
@@ -291,11 +364,16 @@ app.post('/api/arma-event', async (req, res) => {
         if (faction && serverData.equipes[faction] && !serverData.equipes[faction].includes(nomJoueur)) {
             serverData.equipes[faction].push(nomJoueur);
 
+            let factionLabel = "Inconnue";
+            if (faction === "US") factionLabel = "🔵 OTAN";
+            else if (faction === "USSR") factionLabel = "🔴 URSS";
+            else if (faction === "FIA") factionLabel = "🔰 FIA";
+
             envoyerLogDiscord(
                 "📥 Connexion Opérateur",
                 `**${nomJoueur}** a été parachuté.`,
                 3066993,
-                [{ name: "Faction", value: faction === "US" ? "🔵 OTAN" : "🔴 URSS", inline: true }]
+                [{ name: "Faction", value: factionLabel, inline: true }]
             );
             rafraichirSalonCompteur();
         }
@@ -304,6 +382,9 @@ app.post('/api/arma-event', async (req, res) => {
     if (type === "deconnexion" && nomJoueur) {
         serverData.equipes.US = serverData.equipes.US.filter(p => p !== nomJoueur);
         serverData.equipes.URSS = serverData.equipes.URSS.filter(p => p !== nomJoueur);
+        if (serverData.equipes.FIA) {
+            serverData.equipes.FIA = serverData.equipes.FIA.filter(p => p !== nomJoueur);
+        }
 
         // Sauvegarder le temps de jeu accumulé sur déconnexion
         if (activePlayerSessions[nomJoueur]) {
@@ -336,7 +417,7 @@ app.post('/api/arma-event', async (req, res) => {
             isTK = true;
         }
 
-        serverData.killfeed.unshift({ horaire: new Date().toLocaleTimeString('fr-FR'), message: isTK ? `⚠️ [TEAMKILL] ${detail}` : `💀 ${detail}` });
+        serverData.killfeed.unshift({ horaire: new Date().toLocaleTimeString('fr-FR', { timeZone: 'Europe/Paris' }), message: isTK ? `⚠️ [TEAMKILL] ${detail}` : `💀 ${detail}` });
         if (serverData.killfeed.length > 30) serverData.killfeed.pop();
 
         // ---- ENREGISTREMENT DES STATS DANS LA BASE DE DONNÉES ----
@@ -384,7 +465,7 @@ app.post('/api/arma-event', async (req, res) => {
         let channelName = killer || "Global";
         let message = typeTir || "";
         serverData.chatfeed.unshift({
-            horaire: new Date().toLocaleTimeString('fr-FR'),
+            horaire: new Date().toLocaleTimeString('fr-FR', { timeZone: 'Europe/Paris' }),
             player: player,
             faction: faction,
             channel: channelName,
@@ -404,7 +485,7 @@ app.post('/api/arma-event', async (req, res) => {
         let prevFaction = killer || "Aucune";
         
         serverData.killfeed.unshift({
-            horaire: new Date().toLocaleTimeString('fr-FR'),
+            horaire: new Date().toLocaleTimeString('fr-FR', { timeZone: 'Europe/Paris' }),
             message: `🚩 [CAPTURE] La base de ${baseName} a été capturée par les forces de ${newFaction} (auparavant contrôlée par ${prevFaction}).`
         });
         if (serverData.killfeed.length > 30) serverData.killfeed.pop();
@@ -429,7 +510,7 @@ app.post('/api/arma-event', async (req, res) => {
         let occupants = killer || "Aucun occupant";
 
         serverData.killfeed.unshift({
-            horaire: new Date().toLocaleTimeString('fr-FR'),
+            horaire: new Date().toLocaleTimeString('fr-FR', { timeZone: 'Europe/Paris' }),
             message: `💥 [DÉTRUIT] Le véhicule ${vehicleName} (${vehicleFaction}) a été détruit. Équipage : ${occupants}.`
         });
         if (serverData.killfeed.length > 30) serverData.killfeed.pop();
@@ -458,7 +539,7 @@ app.post('/api/arma-event', async (req, res) => {
         }
     }
 
-    serverData.joueursCount = serverData.equipes.US.length + serverData.equipes.URSS.length;
+    serverData.joueursCount = serverData.equipes.US.length + serverData.equipes.URSS.length + (serverData.equipes.FIA ? serverData.equipes.FIA.length : 0);
     res.status(200).send({ message: "OK" });
 });
 
@@ -479,7 +560,20 @@ app.get('/api/admin/logs', async (req, res) => {
     try {
         const limitInt = parseInt(limit) || 100;
         const logs = await getLogs(limitInt, filter || "All", search || "");
-        res.json(logs);
+        
+        // Normaliser les dates pour forcer le format ISO UTC (notamment pour SQLite)
+        const formattedLogs = logs.map(log => {
+            let dateVal = log.created_at;
+            if (typeof dateVal === 'string' && !dateVal.includes('T') && !dateVal.includes('Z')) {
+                dateVal = dateVal.replace(' ', 'T') + 'Z';
+            }
+            return {
+                ...log,
+                created_at: typeof dateVal === 'string' ? dateVal : dateVal.toISOString()
+            };
+        });
+        
+        res.json(formattedLogs);
     } catch (err) {
         console.error("❌ Erreur lors de la récupération des logs :", err.message);
         res.status(500).json({ error: err.message });
@@ -494,7 +588,20 @@ app.get('/api/admin/metrics', async (req, res) => {
     try {
         const limitInt = parseInt(limit) || 288;
         const metrics = await getMetrics(limitInt);
-        res.json(metrics);
+        
+        // Normaliser les dates pour forcer le format ISO UTC (notamment pour SQLite)
+        const formattedMetrics = metrics.map(m => {
+            let dateVal = m.created_at;
+            if (typeof dateVal === 'string' && !dateVal.includes('T') && !dateVal.includes('Z')) {
+                dateVal = dateVal.replace(' ', 'T') + 'Z';
+            }
+            return {
+                ...m,
+                created_at: typeof dateVal === 'string' ? dateVal : dateVal.toISOString()
+            };
+        });
+        
+        res.json(formattedMetrics);
     } catch (err) {
         console.error("❌ Erreur lors de la récupération des métriques :", err.message);
         res.status(500).json({ error: err.message });
@@ -544,6 +651,7 @@ app.post('/api/admin/command', (req, res) => {
                     serverData.joueursCount = 0;
                     serverData.equipes.US = [];
                     serverData.equipes.URSS = [];
+                    serverData.equipes.FIA = [];
                     
                     // Sauvegarder le temps accumulé avant de couper
                     for (const player in activePlayerSessions) {
@@ -562,7 +670,7 @@ app.post('/api/admin/command', (req, res) => {
                     activePlayerSessions = {};
                     
                     sessionTeamkills = {};
-                    rafraichirSalonCompteur();
+                    await rafraichirSalonCompteur(true);
                     
                     await logSystemEvent("offline", null, "Signal satellite perdu (le serveur ne répond plus).");
                     
@@ -575,20 +683,10 @@ app.post('/api/admin/command', (req, res) => {
             }
         }, 10000);
 
-        // Enregistrement périodique des métriques d'activité toutes les 5 minutes
+        // Enregistrement périodique des métriques d'activité
         setInterval(async () => {
-            if (serverData.status === "online") {
-                const playerCount = serverData.joueursCount || 0;
-                const usCount = (serverData.equipes && serverData.equipes.US) ? serverData.equipes.US.length : 0;
-                const ussrCount = (serverData.equipes && serverData.equipes.URSS) ? serverData.equipes.URSS.length : 0;
-                try {
-                    await addMetric(playerCount, usCount, ussrCount);
-                    console.log(`📊 [METRIC SAVED] Actifs: ${playerCount} (US: ${usCount}, URSS: ${ussrCount})`);
-                } catch (err) {
-                    console.error("❌ Erreur lors de l'enregistrement de la métrique périodique :", err.message);
-                }
-            }
-        }, 300000);
+            await enregistrerMetriqueSiBesoin();
+        }, 60000);
 
         app.listen(PORT, () => console.log(`🤖 Cerveau V2 connecté sur le port ${PORT}`));
     } catch (err) {

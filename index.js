@@ -150,7 +150,15 @@ async function checkAndRegisterPlayer(name) {
 
 // --- ROUTE 1 : ARMA ---
 app.post('/api/arma-event', async (req, res) => {
-    const { type, detail, player, faction, killer, killerFaction, typeTir } = req.body;
+    const { auth, type, detail, player, faction, killer, killerFaction, typeTir } = req.body;
+
+    // Validation du token de sécurité (BRIDGE_AUTH_TOKEN)
+    const BRIDGE_AUTH_TOKEN = process.env.BRIDGE_AUTH_TOKEN || "";
+    if (BRIDGE_AUTH_TOKEN && auth !== BRIDGE_AUTH_TOKEN) {
+        console.warn(`⚠️ [API AUTH FAILED] Token reçu: "${auth || 'aucun'}" | Attendu: "${BRIDGE_AUTH_TOKEN}"`);
+        return res.status(401).json({ error: "Unauthorized" });
+    }
+
     let nomJoueur = player ? player.trim() : "";
 
     serverData.lastHeartbeat = Date.now();

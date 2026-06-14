@@ -18,6 +18,11 @@ const {
 const DISCORD_WEBHOOK_URL = process.env.DISCORD_WEBHOOK_URL || "";
 const DISCORD_BOT_TOKEN = process.env.DISCORD_BOT_TOKEN || "";
 const COMPTEUR_CHANNEL_ID = process.env.DISCORD_COMPTEUR_CHANNEL_ID || "";
+const DISCORD_CHAT_WEBHOOK_URL = process.env.DISCORD_CHAT_WEBHOOK_URL || "";
+
+// Suivi d'état session & anti-griefing
+let estPrecedemmentHorsLigne = true;
+let sessionTeamkills = {};
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -101,6 +106,29 @@ async function envoyerLogDiscord(titre, description, couleur, champs = []) {
     }
 }
 
+// Fonction Relais Chat Discord
+async function envoyerChatDiscord(nomJoueur, faction, canal, message) {
+    if (!DISCORD_CHAT_WEBHOOK_URL) return;
+    if (DISCORD_CHAT_WEBHOOK_URL.includes("TON_WEBHOOK")) return;
+
+    let factionEmoji = "👥";
+    if (faction === "US") factionEmoji = "🇺🇸";
+    else if (faction === "USSR") factionEmoji = "☭";
+    else if (faction === "FIA") factionEmoji = "🔰";
+
+    const content = `[${canal}] **${factionEmoji} ${nomJoueur}** : ${message}`;
+
+    try {
+        await fetch(DISCORD_CHAT_WEBHOOK_URL, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ content: content })
+        });
+    } catch (err) {
+        console.error("❌ Erreur lors de l'envoi du message chat sur Discord :", err.message);
+    }
+}
+
 async function checkAndRegisterPlayer(name) {
     if (!name || name === "IA / Bot" || name === "Lui-meme" || name === "Un sifflement dans le noir" || name.startsWith("Joueur_")) return;
     if (!leaderboard[name]) {
@@ -119,13 +147,36 @@ app.post('/api/arma-event', async (req, res) => {
     // Si c'est offline
     if (type === "offline") {
         serverData.status = "offline";
+        estPrecedemmentHorsLigne = true;
+        sessionTeamkills = {};
         serverData.joueursCount = 0;
         serverData.equipes.US = [];
         serverData.equipes.URSS = [];
         serverData.killfeed.unshift({ horaire: new Date().toLocaleTimeString('fr-FR'), message: "🔴 Le serveur a été arrêté proprement." });
         if (serverData.killfeed.length > 30) serverData.killfeed.pop();
+
+        envoyerLogDiscord(
+            "🔴 Liaison Satellite Interrompue",
+            "Le serveur Arma Reforger a été **arrêté proprement**.",
+            15158332 // Rouge
+        );
+
         res.status(200).send({ message: "OK" });
         return;
+    }
+
+    // Gestion du statut En Ligne au premier heartbeat/connexion
+    if (type !== "map_update") {
+        if (estPrecedemmentHorsLigne) {
+            estPrecedemmentHorsLigne = false;
+            serverData.status = "online";
+            sessionTeamkills = {};
+            envoyerLogDiscord(
+                "🟢 Liaison Satellite Établie",
+                "Le serveur Arma Reforger est désormais **actif** et connecté au Centre Tactique.",
+                3066993 // Vert
+            );
+        }
     }
 
     // Si c'est un heartbeat du serveur
@@ -194,6 +245,16 @@ app.post('/api/arma-event', async (req, res) => {
             if (killer && leaderboard[killer]) {
                 leaderboard[killer].teamkills += 1;
                 await addTeamkill(killer);
+
+                // Incrément session TK et alerte critique
+                sessionTeamkills[killer] = (sessionTeamkills[killer] || 0) + 1;
+                if (sessionTeamkills[killer] >= 3) {
+                    envoyerLogDiscord(
+                        "🚨 ALERTE ANTI-GRIEFING (TEAMKILLS)",
+                        `⚠️ **@here Le joueur ${killer} a commis ${sessionTeamkills[killer]} teamkills en session !**`,
+                        16753920
+                    );
+                }
             }
         } else {
             if (killer && leaderboard[killer] && killer !== "IA / Bot" && killer !== nomJoueur) {
@@ -224,6 +285,9 @@ app.post('/api/arma-event', async (req, res) => {
             message: message
         });
         if (serverData.chatfeed.length > 30) serverData.chatfeed.pop();
+
+        // Relais Discord en direct
+        await envoyerChatDiscord(player, faction, channelName, message);
     }
 
     if (type === "capture") {
@@ -236,6 +300,17 @@ app.post('/api/arma-event', async (req, res) => {
             message: `🚩 [CAPTURE] La base de ${baseName} a été capturée par les forces de ${newFaction} (auparavant contrôlée par ${prevFaction}).`
         });
         if (serverData.killfeed.length > 30) serverData.killfeed.pop();
+
+        // Envoi alerte Discord
+        let couleurEmbed = 10066329; // Gris
+        if (newFaction === "US") couleurEmbed = 3066993; // Bleu US
+        else if (newFaction === "USSR") couleurEmbed = 15158332; // Rouge URSS
+
+        envoyerLogDiscord(
+            "🚩 Base Stratégique Capturée",
+            `La base de **${baseName}** a été capturée par les forces de **${newFaction === 'US' ? 'OTAN 🇺🇸' : newFaction === 'USSR' ? 'URSS ☭' : 'FIA 🔰'}**.\n*(Auparavant contrôlée par : ${prevFaction})*`,
+            couleurEmbed
+        );
     }
 
     if (type === "vehicle_destroyed") {
@@ -248,6 +323,13 @@ app.post('/api/arma-event', async (req, res) => {
             message: `💥 [DÉTRUIT] Le véhicule ${vehicleName} (${vehicleFaction}) a été détruit. Équipage : ${occupants}.`
         });
         if (serverData.killfeed.length > 30) serverData.killfeed.pop();
+
+        // Envoi alerte Discord
+        envoyerLogDiscord(
+            "💥 Pertes de Véhicule",
+            `Le véhicule **${vehicleName}** (${vehicleFaction === 'US' ? 'OTAN 🇺🇸' : vehicleFaction === 'USSR' ? 'URSS ☭' : 'FIA 🔰'}) a été détruit.\n\n💀 **Équipage touché :**\n${occupants}`,
+            9830400 // Violet / rouge sombre
+        );
 
         // Increment deaths / vehicle destructions for players inside the vehicle
         if (occupants && occupants !== "Aucun occupant") {
@@ -270,15 +352,6 @@ app.post('/api/arma-event', async (req, res) => {
 
 // --- ROUTE 2 : STATS POUR LE SITE WEB ---
 app.get('/api/stats', (req, res) => {
-    const maintenant = Date.now();
-    if (serverData.lastHeartbeat > 0 && (maintenant - serverData.lastHeartbeat > 25000)) {
-        serverData.status = "offline";
-        serverData.joueursCount = 0;
-        serverData.equipes.US = [];
-        serverData.equipes.URSS = [];
-        rafraichirSalonCompteur();
-    }
-
     res.json({
         server: serverData,
         leaderboard: leaderboard
@@ -317,6 +390,29 @@ app.post('/api/admin/command', (req, res) => {
     try {
         await initDatabase();
         leaderboard = await getLeaderboardObject();
+        
+        // Surveillance en arrière-plan (Watchdog) pour perte de signal satellite
+        setInterval(() => {
+            const maintenant = Date.now();
+            if (serverData.lastHeartbeat > 0 && (maintenant - serverData.lastHeartbeat > 40000)) {
+                if (!estPrecedemmentHorsLigne) {
+                    estPrecedemmentHorsLigne = true;
+                    serverData.status = "offline";
+                    serverData.joueursCount = 0;
+                    serverData.equipes.US = [];
+                    serverData.equipes.URSS = [];
+                    sessionTeamkills = {};
+                    rafraichirSalonCompteur();
+                    
+                    envoyerLogDiscord(
+                        "⚠️ Signal Satellite Perdu",
+                        "Le serveur Arma Reforger ne répond plus. Liaison interrompue.",
+                        15158332 // Rouge
+                    );
+                }
+            }
+        }, 10000);
+
         app.listen(PORT, () => console.log(`🤖 Cerveau V2 connecté sur le port ${PORT}`));
     } catch (err) {
         console.error("❌ Impossible de démarrer le serveur API :", err);

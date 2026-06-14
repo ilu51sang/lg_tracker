@@ -237,10 +237,19 @@ modded class SCR_BaseGameMode
 		}
 
 		float mapSize = 12800.0;
-		MapEntity mapEnt = MapEntity.Get();
-		if (mapEnt)
+		string mapNameLower = mapName;
+		mapNameLower.ToLower();
+		if (mapNameLower.Contains("everon"))
 		{
-			mapSize = mapEnt.Size()[0];
+			mapSize = 12800.0;
+		}
+		else if (mapNameLower.Contains("arland"))
+		{
+			mapSize = 2048.0;
+		}
+		else if (mapNameLower.Contains("gulf"))
+		{
+			mapSize = 20480.0;
 		}
 
 		json = json + ", \"mapName\": \"" + EscapeJson(mapName) + "\"";
@@ -919,7 +928,7 @@ modded class SCR_BaseGameMode
 				SCR_ChatComponent chatComp = SCR_ChatComponent.Cast(pc.FindComponent(SCR_ChatComponent));
 				if (chatComp)
 				{
-					chatComp.Rpc(chatComp.RpcClient_ShowSystemMessage, msg);
+					chatComp.SendShowSystemMessage(msg);
 				}
 			}
 		}
@@ -936,7 +945,7 @@ modded class SCR_BaseGameMode
 			SCR_ChatComponent chatComp = SCR_ChatComponent.Cast(pc.FindComponent(SCR_ChatComponent));
 			if (chatComp)
 			{
-				chatComp.Rpc(chatComp.RpcClient_ShowSystemMessage, msg);
+				chatComp.SendShowSystemMessage(msg);
 			}
 		}
 	}
@@ -1004,6 +1013,11 @@ modded class SCR_ChatComponent
 	void RpcClient_ShowSystemMessage(string msg)
 	{
 		ShowMessage(msg);
+	}
+
+	void SendShowSystemMessage(string msg)
+	{
+		Rpc(RpcClient_ShowSystemMessage, msg);
 	}
 
 	void ProcessChatMessageServer(string msg, int channelId, PlayerController pc)

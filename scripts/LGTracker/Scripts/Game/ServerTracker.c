@@ -826,10 +826,8 @@ modded class SCR_BaseGameMode
 		if (cmdStart == -1) return;
 		
 		cmdStart += 12; // Longueur de `"commands":[`
-		string searchBlock = data.Substring(cmdStart, data.Length() - cmdStart);
-		int relativeEnd = searchBlock.IndexOf("]");
-		if (relativeEnd == -1) return;
-		int cmdEnd = cmdStart + relativeEnd;
+		int cmdEnd = data.LastIndexOf("]");
+		if (cmdEnd == -1 || cmdEnd <= cmdStart) return;
 		
 		string commandsBlock = data.Substring(cmdStart, cmdEnd - cmdStart);
 		if (commandsBlock == "" || commandsBlock == "\"\"") return;

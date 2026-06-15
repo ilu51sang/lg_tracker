@@ -61,14 +61,105 @@ const PORT = process.env.PORT || 3000;
 app.use(cors());
 app.use(express.json({ type: '*/*' }));
 
-// Initialisation du Bot Discord pour le salon dynamique
+// Utilitaire pour formater la durée de jeu pour le bot Discord
+function formaterDureeBot(secondes) {
+    if (!secondes || secondes <= 0) return "0s";
+    const h = Math.floor(secondes / 3600);
+    const m = Math.floor((secondes % 3600) / 60);
+    const s = secondes % 60;
+    if (h > 0) {
+        return `${h}h ${m}m`;
+    } else if (m > 0) {
+        return `${m}m ${s}s`;
+    } else {
+        return `${s}s`;
+    }
+}
+
+// Initialisation du Bot Discord pour le salon dynamique et les commandes slash
 const client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages] });
 
 if (DISCORD_BOT_TOKEN) {
-    client.once('ready', () => {
+    client.once('ready', async () => {
         console.log(`🤖 Bot Discord connecté en tant que ${client.user.tag}`);
         rafraichirSalonCompteur(true);
+
+        // Enregistrement des commandes slash
+        try {
+            await client.application.commands.set([
+                {
+                    name: 'stats',
+                    description: 'Affiche vos statistiques de jeu Les Gaulois',
+                    options: [
+                        {
+                            name: 'pseudo',
+                            description: 'Votre pseudo en jeu',
+                            type: 3, // STRING
+                            required: true
+                        }
+                    ]
+                }
+            ]);
+            console.log("✅ Commande Slash /stats enregistrée avec succès.");
+        } catch (e) {
+            console.error("❌ Erreur lors de l'enregistrement de la commande slash /stats :", e.message);
+        }
     });
+
+    client.on('interactionCreate', async (interaction) => {
+        if (!interaction.isChatInputCommand()) return;
+
+        if (interaction.commandName === 'stats') {
+            const pseudoInput = interaction.options.getString('pseudo').trim();
+            const pseudoInputLower = pseudoInput.toLowerCase();
+
+            // Recherche exacte puis partielle du joueur
+            let matchPlayer = Object.keys(leaderboard).find(k => k.toLowerCase() === pseudoInputLower);
+            if (!matchPlayer) {
+                matchPlayer = Object.keys(leaderboard).find(k => k.toLowerCase().includes(pseudoInputLower));
+            }
+
+            if (!matchPlayer) {
+                return interaction.reply({
+                    content: `❌ Aucun joueur trouvé avec le pseudo **"${pseudoInput}"** dans la base de données.`,
+                    ephemeral: true
+                });
+            }
+
+            const stats = leaderboard[matchPlayer];
+            const kills = stats.kills || 0;
+            const morts = stats.morts || stats.deaths || 0;
+            const ratio = morts > 0 ? (kills / morts).toFixed(2) : kills.toFixed(2);
+            const teamkills = stats.teamkills || 0;
+            const captures = stats.captures || 0;
+            const vehicles = stats.vehicles_destroyed || 0;
+            const playtimeFormatted = formaterDureeBot(stats.playtime || 0);
+
+            const embed = {
+                title: `🪖 Fiche Opérateur : ${matchPlayer}`,
+                color: 3447003, // Bleu
+                thumbnail: {
+                    url: "https://ilu51sang.github.io/site-les-gaulois/assets/logo.png"
+                },
+                fields: [
+                    { name: "🕒 Temps de Jeu", value: `\`${playtimeFormatted}\``, inline: true },
+                    { name: "⚔️ Éliminations (Kills)", value: `\`${kills}\``, inline: true },
+                    { name: "💀 Morts", value: `\`${morts}\``, inline: true },
+                    { name: "📊 Ratio K/D", value: `\`${ratio}\``, inline: true },
+                    { name: "⚠️ Tirs Fratricides (TK)", value: `\`${teamkills}\``, inline: true },
+                    { name: "💥 Véhicules Détruits", value: `\`${vehicles}\``, inline: true },
+                    { name: "🚩 Bases Capturées", value: `\`${captures}\``, inline: true }
+                ],
+                footer: {
+                    text: "Centre Tactique Les Gaulois"
+                },
+                timestamp: new Date().toISOString()
+            };
+
+            await interaction.reply({ embeds: [embed] });
+        }
+    });
+
     client.login(DISCORD_BOT_TOKEN).catch(err => {
         console.log("⚠️ Bot Discord non configuré ou token invalide.", err.message);
     });

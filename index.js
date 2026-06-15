@@ -576,7 +576,17 @@ app.post('/api/arma-event', async (req, res) => {
 
     // Si c'est un update de la livemap
     if (type === "map_update") {
-        const mapName = req.body.mapName || "Eden";
+        // Alias pour les noms de carte génériques envoyés par le mod
+        const mapAliases = {
+            "unnamed.ent": "shervika",
+            "unnamed": "shervika"
+        };
+        let mapName = req.body.mapName || "Eden";
+        // Résoudre l'alias si le nom est générique
+        const mapNameLowerRaw = mapName.toLowerCase();
+        if (mapAliases[mapNameLowerRaw]) {
+            mapName = mapAliases[mapNameLowerRaw];
+        }
         const mapNameLower = mapName.toLowerCase();
         let mapSize = req.body.mapSize || 12800;
         

@@ -88,7 +88,7 @@ if (DISCORD_BOT_TOKEN) {
         try {
             await client.application.commands.set([
                 {
-                    name: 'stats',
+                    name: 'lgstats',
                     description: 'Affiche vos statistiques de jeu Les Gaulois',
                     options: [
                         {
@@ -100,16 +100,16 @@ if (DISCORD_BOT_TOKEN) {
                     ]
                 }
             ]);
-            console.log("✅ Commande Slash /stats enregistrée avec succès.");
+            console.log("✅ Commande Slash /lgstats enregistrée avec succès.");
         } catch (e) {
-            console.error("❌ Erreur lors de l'enregistrement de la commande slash /stats :", e.message);
+            console.error("❌ Erreur lors de l'enregistrement de la commande slash /lgstats :", e.message);
         }
     });
 
     client.on('interactionCreate', async (interaction) => {
         if (!interaction.isChatInputCommand()) return;
 
-        if (interaction.commandName === 'stats') {
+        if (interaction.commandName === 'lgstats') {
             const pseudoInput = interaction.options.getString('pseudo').trim();
             const pseudoInputLower = pseudoInput.toLowerCase();
 

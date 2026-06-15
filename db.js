@@ -183,6 +183,7 @@ async function initDatabase() {
     let queryNotes = "";
     let querySanctions = "";
     let queryWatchlist = "";
+    let querySessions = "";
     if (isMysql) {
         queryNotes = `
             CREATE TABLE IF NOT EXISTS admin_notes (
@@ -210,6 +211,17 @@ async function initDatabase() {
                 reason TEXT,
                 added_by VARCHAR(100) DEFAULT 'admin',
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+        `;
+        querySessions = `
+            CREATE TABLE IF NOT EXISTS game_sessions (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                map_name VARCHAR(255) NOT NULL,
+                started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                ended_at TIMESTAMP NULL,
+                total_connections INT DEFAULT 0,
+                total_kills INT DEFAULT 0,
+                total_tks INT DEFAULT 0
             );
         `;
     } else if (isPostgres) {
@@ -241,6 +253,17 @@ async function initDatabase() {
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
         `;
+        querySessions = `
+            CREATE TABLE IF NOT EXISTS game_sessions (
+                id SERIAL PRIMARY KEY,
+                map_name VARCHAR(255) NOT NULL,
+                started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                ended_at TIMESTAMP NULL,
+                total_connections INT DEFAULT 0,
+                total_kills INT DEFAULT 0,
+                total_tks INT DEFAULT 0
+            );
+        `;
     } else {
         queryNotes = `
             CREATE TABLE IF NOT EXISTS admin_notes (
@@ -268,6 +291,17 @@ async function initDatabase() {
                 reason TEXT,
                 added_by VARCHAR(100) DEFAULT 'admin',
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+        `;
+        querySessions = `
+            CREATE TABLE IF NOT EXISTS game_sessions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                map_name VARCHAR(255) NOT NULL,
+                started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                ended_at TIMESTAMP NULL,
+                total_connections INTEGER DEFAULT 0,
+                total_kills INTEGER DEFAULT 0,
+                total_tks INTEGER DEFAULT 0
             );
         `;
     }
@@ -276,14 +310,17 @@ async function initDatabase() {
         await mysqlPool.query(queryNotes);
         await mysqlPool.query(querySanctions);
         await mysqlPool.query(queryWatchlist);
+        await mysqlPool.query(querySessions);
     } else if (isPostgres) {
         await pgPool.query(queryNotes);
         await pgPool.query(querySanctions);
         await pgPool.query(queryWatchlist);
+        await pgPool.query(querySessions);
     } else {
         dbSqlite.exec(queryNotes);
         dbSqlite.exec(querySanctions);
         dbSqlite.exec(queryWatchlist);
+        dbSqlite.exec(querySessions);
     }
 }
 
@@ -854,6 +891,70 @@ async function getAllSanctions(limit = 100) {
     }
 }
 
+async function startSession(mapName) {
+    if (isMysql) {
+        const [result] = await mysqlPool.query(
+            'INSERT INTO game_sessions (map_name) VALUES (?)',
+            [mapName]
+        );
+        return result.insertId;
+    } else if (isPostgres) {
+        const res = await pgPool.query(
+            'INSERT INTO game_sessions (map_name) VALUES ($1) RETURNING id',
+            [mapName]
+        );
+        return res.rows[0].id;
+    } else {
+        const info = dbSqlite.prepare(
+            'INSERT INTO game_sessions (map_name) VALUES (?)'
+        ).run(mapName);
+        return info.lastInsertRowid;
+    }
+}
+
+async function endSession(sessionId, totalConnections, totalKills, totalTks) {
+    const endedAt = new Date();
+    if (isMysql) {
+        await mysqlPool.query(
+            'UPDATE game_sessions SET ended_at = ?, total_connections = ?, total_kills = ?, total_tks = ? WHERE id = ?',
+            [endedAt, totalConnections, totalKills, totalTks, sessionId]
+        );
+    } else if (isPostgres) {
+        await pgPool.query(
+            'UPDATE game_sessions SET ended_at = $1, total_connections = $2, total_kills = $3, total_tks = $4 WHERE id = $5',
+            [endedAt, totalConnections, totalKills, totalTks, sessionId]
+        );
+    } else {
+        dbSqlite.prepare(
+            'UPDATE game_sessions SET ended_at = ?, total_connections = ?, total_kills = ?, total_tks = ? WHERE id = ?'
+        ).run(endedAt.toISOString(), totalConnections, totalKills, totalTks, sessionId);
+    }
+}
+
+async function getGameSessions(limit = 30) {
+    const sql = 'SELECT id, map_name, started_at, ended_at, total_connections, total_kills, total_tks FROM game_sessions ORDER BY id DESC LIMIT ?';
+    if (isPostgres) {
+        const res = await pgPool.query(sql.replace('?', '$1'), [limit]);
+        return res.rows;
+    } else if (isMysql) {
+        const [rows] = await mysqlPool.query(sql, [limit]);
+        return rows;
+    } else {
+        return dbSqlite.prepare(sql).all(limit);
+    }
+}
+
+async function closeActiveSessionsOnBoot() {
+    const sql = 'UPDATE game_sessions SET ended_at = CURRENT_TIMESTAMP WHERE ended_at IS NULL';
+    if (isPostgres) {
+        await pgPool.query(sql);
+    } else if (isMysql) {
+        await mysqlPool.query(sql);
+    } else {
+        dbSqlite.exec(sql);
+    }
+}
+
 module.exports = {
     initDatabase,
     getLeaderboardObject,
@@ -879,5 +980,9 @@ module.exports = {
     isOnWatchlist,
     getPeakPlayers,
     getPeakHours,
-    getAllSanctions
+    getAllSanctions,
+    startSession,
+    endSession,
+    getGameSessions,
+    closeActiveSessionsOnBoot
 };

@@ -28,7 +28,11 @@ const {
     isOnWatchlist,
     getPeakPlayers,
     getPeakHours,
-    getAllSanctions
+    getAllSanctions,
+    startSession,
+    endSession,
+    getGameSessions,
+    closeActiveSessionsOnBoot
 } = require('./db');
 
 // Lecture des variables d'environnement
@@ -47,6 +51,7 @@ let sessionStartTime = 0;
 let sessionKillCount = 0;
 let sessionTKCount = 0;
 let sessionConnections = new Set();
+let currentSessionId = null;
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -123,13 +128,73 @@ async function mettreAJourEmbedCompteur() {
     }
 }
 
+// Fonction pour mettre à jour le classement Top 10 sur Discord
+async function mettreAJourEmbedStats() {
+    const STATS_CHANNEL_ID = process.env.DISCORD_STATS_CHANNEL_ID || "";
+    if (!STATS_CHANNEL_ID || !client.token) return;
+
+    try {
+        const channel = await client.channels.fetch(STATS_CHANNEL_ID);
+        if (!channel) return;
+
+        // Récupérer et trier les joueurs par kills
+        const top10 = Object.keys(leaderboard)
+            .map(name => ({ name, ...leaderboard[name] }))
+            .sort((a, b) => (b.kills || 0) - (a.kills || 0))
+            .slice(0, 10);
+
+        let description = "Voici le classement actuel des 10 meilleurs opérateurs de la communauté :\n\n";
+
+        if (top10.length === 0) {
+            description += "*Aucune élimination enregistrée pour le moment.*";
+        } else {
+            top10.forEach((player, index) => {
+                const ratio = (player.morts || 0) > 0 
+                    ? ((player.kills || 0) / (player.morts || 0)).toFixed(2) 
+                    : (player.kills || 0).toFixed(2);
+                
+                const emoji = index === 0 ? "🥇" : index === 1 ? "🥈" : index === 2 ? "🥉" : `**#${index + 1}**`;
+                const playtimeHours = ((player.playtime || 0) / 3600).toFixed(1);
+                
+                description += `${emoji} **${player.name}**\n` +
+                               `└ ⚔️ Kills: \`${player.kills || 0}\` | 💀 Morts: \`${player.morts || 0}\` | 📊 K/D: \`${ratio}\` | 🕒 Jeu: \`${playtimeHours}h\`\n\n`;
+            });
+        }
+
+        const embed = {
+            title: "🏆 TOP 10 DES GAULOIS - CLASSEMENT",
+            description: description,
+            color: 15844367, // Or (Gold)
+            thumbnail: {
+                url: "https://ilu51sang.github.io/site-les-gaulois/assets/logo.png"
+            },
+            footer: {
+                text: "Mise à jour en temps réel • Les Gaulois"
+            },
+            timestamp: new Date().toISOString()
+        };
+
+        const messages = await channel.messages.fetch({ limit: 10 });
+        const messageBot = messages.find(m => m.author.id === client.user.id && m.embeds.length > 0 && m.embeds[0].title === "🏆 TOP 10 DES GAULOIS - CLASSEMENT");
+
+        if (messageBot) {
+            await messageBot.edit({ embeds: [embed] });
+        } else {
+            await channel.send({ embeds: [embed] });
+        }
+    } catch (err) {
+        console.error("❌ Erreur lors de la mise à jour de l'embed stats Discord :", err.message);
+    }
+}
+
 // Fonction pour mettre à jour le nom du salon Discord (Max 1 fois toutes les 5 min à cause des limites de Discord)
 let dernierChangementSalon = 0;
 async function rafraichirSalonCompteur(force = false) {
     const maintenant = Date.now();
     
-    // Toujours mettre à jour l'embed (non rate-limité comme setName)
+    // Toujours mettre à jour les embeds (non rate-limités comme setName)
     await mettreAJourEmbedCompteur();
+    await mettreAJourEmbedStats();
 
     if (!force && (maintenant - dernierChangementSalon < 300000)) return; // Sécurité anti-spam (5 minutes)
 
@@ -290,6 +355,15 @@ app.post('/api/arma-event', async (req, res) => {
         if (serverData.killfeed.length > 30) serverData.killfeed.pop();
 
         await logSystemEvent("offline", null, "Le serveur a été arrêté proprement.");
+        if (currentSessionId) {
+            try {
+                await endSession(currentSessionId, sessionConnections.size, sessionKillCount, sessionTKCount);
+                console.log(`🎮 [SESSION ENDED] ID: ${currentSessionId} updated in DB.`);
+                currentSessionId = null;
+            } catch (e) {
+                console.error("❌ Erreur d'enregistrement de fin de session :", e.message);
+            }
+        }
         await rafraichirSalonCompteur(true);
 
         // Rapport de session avant notification Discord
@@ -330,6 +404,15 @@ app.post('/api/arma-event', async (req, res) => {
         sessionKillCount = 0;
         sessionTKCount = 0;
         sessionConnections = new Set();
+
+        const currentMap = serverData.map ? (serverData.map.mapName || "Eden") : "Eden";
+        try {
+            currentSessionId = await startSession(currentMap);
+            console.log(`🎮 [SESSION STARTED] ID: ${currentSessionId} (Map: ${currentMap})`);
+        } catch (e) {
+            console.error("❌ Erreur de création de session dans la base de données :", e.message);
+        }
+
         await logSystemEvent("online", null, "Le serveur est désormais actif et connecté au Centre Tactique.");
         await rafraichirSalonCompteur(true);
         await enregistrerMetriqueSiBesoin(true);
@@ -627,6 +710,17 @@ app.get('/api/stats', (req, res) => {
     });
 });
 
+app.get('/api/sessions', async (req, res) => {
+    try {
+        const limit = parseInt(req.query.limit) || 30;
+        const sessions = await getGameSessions(limit);
+        res.json(sessions);
+    } catch (err) {
+        console.error("❌ Erreur lors de la récupération des sessions :", err.message);
+        res.status(500).json({ error: err.message });
+    }
+});
+
 // --- ROUTES ADMIN POUR LES LOGS ET LES METRIQUES ---
 app.get('/api/admin/logs', async (req, res) => {
     const { password, limit, filter, search, startDate, endDate } = req.query;
@@ -894,6 +988,12 @@ app.get('/api/admin/sanctions/:player', async (req, res) => {
     try {
         await initDatabase();
         leaderboard = await getLeaderboardObject();
+        try {
+            await closeActiveSessionsOnBoot();
+            console.log("🎮 Sessions actives précédentes fermées proprement au démarrage.");
+        } catch (e) {
+            console.error("❌ Impossible de fermer les sessions ouvertes au démarrage :", e.message);
+        }
         
         // Surveillance en arrière-plan (Watchdog) pour perte de signal satellite
         setInterval(async () => {
@@ -927,6 +1027,15 @@ app.get('/api/admin/sanctions/:player', async (req, res) => {
                     await rafraichirSalonCompteur(true);
                     
                     await logSystemEvent("offline", null, "Signal satellite perdu (le serveur ne répond plus).");
+                    if (currentSessionId) {
+                        try {
+                            await endSession(currentSessionId, sessionConnections.size, sessionKillCount, sessionTKCount);
+                            console.log(`🎮 [SESSION ENDED BY WATCHDOG] ID: ${currentSessionId} updated in DB.`);
+                            currentSessionId = null;
+                        } catch (e) {
+                            console.error("❌ Erreur d'enregistrement de fin de session par watchdog :", e.message);
+                        }
+                    }
 
                     // Rapport de session avant notification Discord
                     if (sessionStartTime > 0) {

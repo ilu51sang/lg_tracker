@@ -320,26 +320,24 @@ app.post('/api/arma-event', async (req, res) => {
         return;
     }
 
-    // Gestion du statut En Ligne au premier heartbeat/connexion
-    if (type !== "map_update") {
-        if (estPrecedemmentHorsLigne) {
-            estPrecedemmentHorsLigne = false;
-            serverData.status = "online";
-            sessionTeamkills = {};
-            // Initialisation des compteurs de session
-            sessionStartTime = Date.now();
-            sessionKillCount = 0;
-            sessionTKCount = 0;
-            sessionConnections = new Set();
-            await logSystemEvent("online", null, "Le serveur est désormais actif et connecté au Centre Tactique.");
-            await rafraichirSalonCompteur(true);
-            await enregistrerMetriqueSiBesoin(true);
-            envoyerLogDiscord(
-                "🟢 Liaison Satellite Établie",
-                "Le serveur Arma Reforger est désormais **actif** et connecté au Centre Tactique.",
-                3066993 // Vert
-            );
-        }
+    // Gestion du statut En Ligne au premier heartbeat/connexion/map_update
+    if (estPrecedemmentHorsLigne) {
+        estPrecedemmentHorsLigne = false;
+        serverData.status = "online";
+        sessionTeamkills = {};
+        // Initialisation des compteurs de session
+        sessionStartTime = Date.now();
+        sessionKillCount = 0;
+        sessionTKCount = 0;
+        sessionConnections = new Set();
+        await logSystemEvent("online", null, "Le serveur est désormais actif et connecté au Centre Tactique.");
+        await rafraichirSalonCompteur(true);
+        await enregistrerMetriqueSiBesoin(true);
+        envoyerLogDiscord(
+            "🟢 Liaison Satellite Établie",
+            "Le serveur Arma Reforger est désormais **actif** et connecté au Centre Tactique.",
+            3066993 // Vert
+        );
     }
 
     // Si c'est un heartbeat du serveur

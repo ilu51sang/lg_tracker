@@ -1018,33 +1018,54 @@ async function ensureSessionPlayer(sessionId, playerName) {
     }
 }
 
+async function getActiveSession() {
+    const sql = 'SELECT id, map_name FROM game_sessions WHERE ended_at IS NULL ORDER BY id DESC LIMIT 1';
+    if (isPostgres) {
+        const res = await pgPool.query(sql);
+        return res.rows[0] || null;
+    } else if (isMysql) {
+        const [rows] = await mysqlPool.query(sql);
+        return rows[0] || null;
+    } else {
+        return dbSqlite.prepare(sql).get() || null;
+    }
+}
+
 async function incrementSessionPlayerStat(sessionId, playerName, statColumn, amount = 1) {
-    if (!sessionId) return;
+    let targetSessionId = sessionId;
+    if (!targetSessionId) {
+        const active = await getActiveSession();
+        if (active) {
+            targetSessionId = active.id;
+        } else {
+            return;
+        }
+    }
     const ALLOWED_SESSION_STATS_COLUMNS = ['kills', 'deaths', 'teamkills', 'captures', 'vehicles_destroyed', 'playtime'];
     if (!ALLOWED_SESSION_STATS_COLUMNS.includes(statColumn)) {
         throw new Error(`Invalid stat column: ${statColumn}`);
     }
     
-    await ensureSessionPlayer(sessionId, playerName);
+    await ensureSessionPlayer(targetSessionId, playerName);
     
     if (isMysql) {
         await mysqlPool.query(`
             UPDATE session_player_stats
             SET ${statColumn} = ${statColumn} + ?
             WHERE session_id = ? AND player_name = ?
-        `, [amount, sessionId, playerName]);
+        `, [amount, targetSessionId, playerName]);
     } else if (isPostgres) {
         await pgPool.query(`
             UPDATE session_player_stats
             SET ${statColumn} = ${statColumn} + $1
             WHERE session_id = $2 AND player_name = $3
-        `, [amount, sessionId, playerName]);
+        `, [amount, targetSessionId, playerName]);
     } else {
         dbSqlite.prepare(`
             UPDATE session_player_stats
             SET ${statColumn} = ${statColumn} + ?
             WHERE session_id = ? AND player_name = ?
-        `).run(amount, sessionId, playerName);
+        `).run(amount, targetSessionId, playerName);
     }
 }
 
@@ -1063,6 +1084,61 @@ async function getSessionPlayerStats(sessionId) {
         return rows;
     } else {
         return dbSqlite.prepare(sql).all(sessionId);
+    }
+}
+
+async function getSessionTimeline(sessionId) {
+    const sessionSql = 'SELECT started_at, ended_at FROM game_sessions WHERE id = ?';
+    let session;
+    if (isPostgres) {
+        const res = await pgPool.query(sessionSql.replace('?', '$1'), [sessionId]);
+        session = res.rows[0];
+    } else if (isMysql) {
+        const [rows] = await mysqlPool.query(sessionSql, [sessionId]);
+        session = rows[0];
+    } else {
+        session = dbSqlite.prepare(sessionSql).get(sessionId);
+    }
+    
+    if (!session) return [];
+    
+    const startedAt = session.started_at;
+    const endedAt = session.ended_at || new Date();
+    
+    if (isPostgres) {
+        const sql = `
+            SELECT event_type, player_name, details, created_at
+            FROM system_logs
+            WHERE created_at >= $1 AND created_at <= $2
+              AND event_type IN ('kill', 'teamkill', 'capture', 'vehicle_destroyed', 'online', 'offline')
+            ORDER BY created_at ASC
+        `;
+        const res = await pgPool.query(sql, [startedAt, endedAt]);
+        return res.rows;
+    } else if (isMysql) {
+        const sql = `
+            SELECT event_type, player_name, details, created_at
+            FROM system_logs
+            WHERE created_at >= ? AND created_at <= ?
+              AND event_type IN ('kill', 'teamkill', 'capture', 'vehicle_destroyed', 'online', 'offline')
+            ORDER BY created_at ASC
+        `;
+        const [rows] = await mysqlPool.query(sql, [startedAt, endedAt]);
+        return rows;
+    } else {
+        const sql = `
+            SELECT event_type, player_name, details, created_at
+            FROM system_logs
+            WHERE datetime(created_at) >= datetime(?) AND datetime(created_at) <= datetime(?)
+              AND event_type IN ('kill', 'teamkill', 'capture', 'vehicle_destroyed', 'online', 'offline')
+            ORDER BY created_at ASC
+        `;
+        let startStr = startedAt;
+        let endStr = endedAt;
+        if (startedAt instanceof Date) startStr = startedAt.toISOString();
+        if (endedAt instanceof Date) endStr = endedAt.toISOString();
+        
+        return dbSqlite.prepare(sql).all(startStr, endStr);
     }
 }
 
@@ -1095,7 +1171,9 @@ module.exports = {
     startSession,
     endSession,
     getGameSessions,
+    getActiveSession,
     closeActiveSessionsOnBoot,
     incrementSessionPlayerStat,
-    getSessionPlayerStats
+    getSessionPlayerStats,
+    getSessionTimeline
 };

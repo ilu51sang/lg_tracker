@@ -2,6 +2,8 @@ require('dotenv').config(); // Charge les variables depuis .env
 
 const express = require('express');
 const cors = require('cors');
+const fs = require('fs');
+const path = require('path');
 const { Client, GatewayIntentBits } = require('discord.js');
 const {
     initDatabase,
@@ -32,10 +34,35 @@ const {
     startSession,
     endSession,
     getGameSessions,
+    getActiveSession,
     closeActiveSessionsOnBoot,
     incrementSessionPlayerStat,
-    getSessionPlayerStats
+    getSessionPlayerStats,
+    getSessionTimeline
 } = require('./db');
+
+// Lecture et gestion dynamique de la configuration des cartes
+let mapSizes = {
+    "everon": 12800,
+    "arland": 2048,
+    "gulf": 20480,
+    "gulfcoast": 20480,
+    "eden": 12800
+};
+
+function loadMapSizes() {
+    try {
+        const configPath = path.join(__dirname, 'map_sizes.json');
+        if (fs.existsSync(configPath)) {
+            mapSizes = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+        } else {
+            fs.writeFileSync(configPath, JSON.stringify(mapSizes, null, 2), 'utf8');
+        }
+    } catch (e) {
+        console.error("⚠️ Erreur lors du chargement de map_sizes.json :", e.message);
+    }
+}
+loadMapSizes();
 
 // Lecture des variables d'environnement
 const DISCORD_WEBHOOK_URL = process.env.DISCORD_WEBHOOK_URL || "";
@@ -549,9 +576,23 @@ app.post('/api/arma-event', async (req, res) => {
 
     // Si c'est un update de la livemap
     if (type === "map_update") {
+        const mapName = req.body.mapName || "Eden";
+        const mapNameLower = mapName.toLowerCase();
+        let mapSize = req.body.mapSize || 12800;
+        
+        // Recharger les tailles de cartes pour prendre en compte les changements à chaud
+        loadMapSizes();
+        
+        for (const [key, size] of Object.entries(mapSizes)) {
+            if (mapNameLower.includes(key.toLowerCase())) {
+                mapSize = size;
+                break;
+            }
+        }
+
         serverData.map = {
-            mapName: req.body.mapName || "Eden",
-            mapSize: req.body.mapSize || 12800,
+            mapName: mapName,
+            mapSize: mapSize,
             players: req.body.players || [],
             bases: req.body.bases || []
         };
@@ -666,11 +707,12 @@ app.post('/api/arma-event', async (req, res) => {
     }
 
     if (type === "kill") {
+        let nomTueur = killer ? killer.trim() : "";
         await checkAndRegisterPlayer(nomJoueur);
-        await checkAndRegisterPlayer(killer);
+        await checkAndRegisterPlayer(nomTueur);
 
         let isTK = false;
-        if (killer && killer !== "IA / Bot" && killer !== nomJoueur && killer !== "Lui-meme" && killer !== "Un sifflement dans le noir" && killerFaction && faction && killerFaction === faction && killerFaction !== "Inconnue") {
+        if (nomTueur && nomTueur !== "IA / Bot" && nomTueur !== nomJoueur && nomTueur !== "Lui-meme" && nomTueur !== "Un sifflement dans le noir" && killerFaction && faction && killerFaction === faction && killerFaction !== "Inconnue") {
             isTK = true;
         }
 
@@ -691,29 +733,29 @@ app.post('/api/arma-event', async (req, res) => {
         }
         
         if (isTK) {
-            if (killer && leaderboard[killer]) {
-                leaderboard[killer].teamkills += 1;
-                await addTeamkill(killer);
+            if (nomTueur && leaderboard[nomTueur]) {
+                leaderboard[nomTueur].teamkills += 1;
+                await addTeamkill(nomTueur);
                 if (currentSessionId) {
-                    await incrementSessionPlayerStat(currentSessionId, killer, 'teamkills', 1);
+                    await incrementSessionPlayerStat(currentSessionId, nomTueur, 'teamkills', 1);
                 }
 
                 // Incrément session TK et alerte critique
-                sessionTeamkills[killer] = (sessionTeamkills[killer] || 0) + 1;
-                if (sessionTeamkills[killer] >= 3) {
+                sessionTeamkills[nomTueur] = (sessionTeamkills[nomTueur] || 0) + 1;
+                if (sessionTeamkills[nomTueur] >= 3) {
                     envoyerLogDiscord(
                         "🚨 ALERTE ANTI-GRIEFING (TEAMKILLS)",
-                        `⚠️ **@here Le joueur ${killer} a commis ${sessionTeamkills[killer]} teamkills en session !**`,
+                        `⚠️ **@here Le joueur ${nomTueur} a commis ${sessionTeamkills[nomTueur]} teamkills en session !**`,
                         16753920
                     );
                 }
             }
         } else {
-            if (killer && leaderboard[killer] && killer !== "IA / Bot" && killer !== nomJoueur) {
-                leaderboard[killer].kills += 1;
-                await addKill(killer);
+            if (nomTueur && leaderboard[nomTueur] && nomTueur !== "IA / Bot" && nomTueur !== nomJoueur) {
+                leaderboard[nomTueur].kills += 1;
+                await addKill(nomTueur);
                 if (currentSessionId) {
-                    await incrementSessionPlayerStat(currentSessionId, killer, 'kills', 1);
+                    await incrementSessionPlayerStat(currentSessionId, nomTueur, 'kills', 1);
                 }
             }
         }
@@ -722,11 +764,11 @@ app.post('/api/arma-event', async (req, res) => {
         let typeTirNettoye = typeTir || "Inconnu";
         if (typeTirNettoye.includes("Character_")) typeTirNettoye = "Corps à Corps 🥊";
 
-        await logSystemEvent(isTK ? "teamkill" : "kill", killer || "Inconnu", `A éliminé ${nomJoueur} (${typeTirNettoye})`);
+        await logSystemEvent(isTK ? "teamkill" : "kill", nomTueur || "Inconnu", `A éliminé ${nomJoueur} (${typeTirNettoye})`);
 
         envoyerLogDiscord(isTK ? "⚠️ Tir Fratricide" : "⚔️ Engagement Neutre", isTK ? "Alerte de tir fratricide !" : "Rapport d'élimination.", isTK ? 16753920 : 3447003, [
             { name: "Victime", value: `💀 **${nomJoueur}**`, inline: true },
-            { name: "Tueur", value: `🔫 **${killer}**`, inline: true },
+            { name: "Tueur", value: `🔫 **${nomTueur}**`, inline: true },
             { name: "Dégâts", value: `📊 ${typeTirNettoye}`, inline: false }
         ]);
     }
@@ -845,6 +887,27 @@ app.get('/api/sessions/:id/players', async (req, res) => {
         res.json(players);
     } catch (err) {
         console.error("❌ Erreur lors de la récupération des joueurs de la session :", err.message);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.get('/api/sessions/:id/timeline', async (req, res) => {
+    try {
+        const sessionId = parseInt(req.params.id);
+        if (isNaN(sessionId)) {
+            return res.status(400).json({ error: "ID de session invalide" });
+        }
+        const timeline = await getSessionTimeline(sessionId);
+        
+        // Normaliser les dates pour forcer le format ISO UTC (notamment pour SQLite)
+        const formattedTimeline = timeline.map(log => ({
+            ...log,
+            created_at: normaliserDate(log.created_at)
+        }));
+        
+        res.json(formattedTimeline);
+    } catch (err) {
+        console.error("❌ Erreur lors de la récupération de la timeline de session :", err.message);
         res.status(500).json({ error: err.message });
     }
 });
@@ -1116,11 +1179,27 @@ app.get('/api/admin/sanctions/:player', async (req, res) => {
     try {
         await initDatabase();
         leaderboard = await getLeaderboardObject();
+        
+        // Résilience aux redémarrages de l'API (Render) : Restauration de la session active
         try {
-            await closeActiveSessionsOnBoot();
-            console.log("🎮 Sessions actives précédentes fermées proprement au démarrage.");
+            const activeSession = await getActiveSession();
+            if (activeSession) {
+                currentSessionId = activeSession.id;
+                estPrecedemmentHorsLigne = false;
+                serverData.status = "online";
+                serverData.lastHeartbeat = Date.now(); // Initialiser pour éviter un timeout immédiat du watchdog
+                console.log(`🎮 [SESSION RESTORED] ID: ${currentSessionId} (Map: ${activeSession.map_name})`);
+            } else {
+                console.log("🎮 Aucune session active à restaurer au démarrage.");
+            }
         } catch (e) {
-            console.error("❌ Impossible de fermer les sessions ouvertes au démarrage :", e.message);
+            console.error("❌ Impossible de restaurer la session active au démarrage :", e.message);
+            try {
+                await closeActiveSessionsOnBoot();
+                console.log("🎮 Sessions actives précédentes fermées proprement en secours.");
+            } catch (err) {
+                console.error("❌ Impossible de fermer les sessions ouvertes en secours :", err.message);
+            }
         }
         
         // Surveillance en arrière-plan (Watchdog) pour perte de signal satellite

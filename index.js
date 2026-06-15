@@ -711,12 +711,21 @@ app.post('/api/arma-event', async (req, res) => {
         await checkAndRegisterPlayer(nomJoueur);
         await checkAndRegisterPlayer(nomTueur);
 
+        // Extraire les coordonnées géographiques du détail si présentes
+        let coordonnees = null;
+        let detailNettoye = detail || "";
+        const coordMatch = detailNettoye.match(/@\s*([0-9.]+)\s*,\s*([0-9.]+)/);
+        if (coordMatch) {
+            coordonnees = { x: parseFloat(coordMatch[1]), y: parseFloat(coordMatch[2]) };
+            detailNettoye = detailNettoye.replace(/\s*@\s*[0-9.]+,\s*[0-9.]+/, '').trim();
+        }
+
         let isTK = false;
         if (nomTueur && nomTueur !== "IA / Bot" && nomTueur !== nomJoueur && nomTueur !== "Lui-meme" && nomTueur !== "Un sifflement dans le noir" && killerFaction && faction && killerFaction === faction && killerFaction !== "Inconnue") {
             isTK = true;
         }
 
-        serverData.killfeed.unshift({ horaire: new Date().toISOString(), message: isTK ? `⚠️ [TEAMKILL] ${detail}` : `💀 ${detail}` });
+        serverData.killfeed.unshift({ horaire: new Date().toISOString(), message: isTK ? `⚠️ [TEAMKILL] ${detailNettoye}` : `💀 ${detailNettoye}` });
         if (serverData.killfeed.length > 30) serverData.killfeed.pop();
 
         // Incrémenter les compteurs de session
@@ -764,7 +773,12 @@ app.post('/api/arma-event', async (req, res) => {
         let typeTirNettoye = typeTir || "Inconnu";
         if (typeTirNettoye.includes("Character_")) typeTirNettoye = "Corps à Corps 🥊";
 
-        await logSystemEvent(isTK ? "teamkill" : "kill", nomTueur || "Inconnu", `A éliminé ${nomJoueur} (${typeTirNettoye})`);
+        // Sauvegarder les coordonnées dans le log système pour la heatmap
+        let logMessage = `A éliminé ${nomJoueur} (${typeTirNettoye})`;
+        if (coordonnees) {
+            logMessage += ` @ ${coordonnees.x},${coordonnees.y}`;
+        }
+        await logSystemEvent(isTK ? "teamkill" : "kill", nomTueur || "Inconnu", logMessage);
 
         envoyerLogDiscord(isTK ? "⚠️ Tir Fratricide" : "⚔️ Engagement Neutre", isTK ? "Alerte de tir fratricide !" : "Rapport d'élimination.", isTK ? 16753920 : 3447003, [
             { name: "Victime", value: `💀 **${nomJoueur}**`, inline: true },
@@ -796,23 +810,73 @@ app.post('/api/arma-event', async (req, res) => {
         let newFaction = faction || "Inconnue";
         let prevFaction = killer || "Aucune";
         
+        let capturers = [];
+        
+        // Calcul de proximité des joueurs pour créditer la capture
+        if (serverData.map && Array.isArray(serverData.map.bases) && Array.isArray(serverData.map.players)) {
+            const baseObj = serverData.map.bases.find(b => b.name && b.name.toLowerCase() === baseName.toLowerCase());
+            if (baseObj) {
+                const baseX = parseFloat(baseObj.x);
+                const baseY = parseFloat(baseObj.y);
+                
+                for (const p of serverData.map.players) {
+                    let pFaction = p.faction || "";
+                    if (pFaction === "USSR") pFaction = "URSS";
+                    let capFaction = newFaction;
+                    if (capFaction === "USSR") capFaction = "URSS";
+                    
+                    if (pFaction === capFaction && p.name) {
+                        const px = parseFloat(p.x);
+                        const py = parseFloat(p.y);
+                        if (!isNaN(baseX) && !isNaN(baseY) && !isNaN(px) && !isNaN(py)) {
+                            const dist = Math.sqrt(Math.pow(px - baseX, 2) + Math.pow(py - baseY, 2));
+                            if (dist <= 250) { // Rayon de 250m autour de la base
+                                const name = p.name.trim();
+                                await checkAndRegisterPlayer(name);
+                                if (leaderboard[name]) {
+                                    leaderboard[name].captures += 1;
+                                    await addCapture(name);
+                                    if (currentSessionId) {
+                                        await incrementSessionPlayerStat(currentSessionId, name, 'captures', 1);
+                                    }
+                                    capturers.push(name);
+                                    console.log(`🚩 [CAPTURE] ${name} crédité pour la base ${baseName} (distance: ${Math.round(dist)}m)`);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
+        let msgLog = `La base de ${baseName} a été capturée par les forces de ${newFaction} (auparavant contrôlée par ${prevFaction}).`;
+        if (capturers.length > 0) {
+            msgLog += ` Opérateurs sur zone : ${capturers.join(', ')}.`;
+        }
+
         serverData.killfeed.unshift({
             horaire: new Date().toISOString(),
-            message: `🚩 [CAPTURE] La base de ${baseName} a été capturée par les forces de ${newFaction} (auparavant contrôlée par ${prevFaction}).`
+            message: `🚩 [CAPTURE] ${baseName} capturée par ${newFaction === 'US' ? 'OTAN' : newFaction === 'USSR' ? 'URSS' : 'FIA'}.${capturers.length > 0 ? ' Zone sécurisée par : ' + capturers.join(', ') : ''}`
         });
         if (serverData.killfeed.length > 30) serverData.killfeed.pop();
 
-        await logSystemEvent("capture", null, `La base de ${baseName} a été capturée par les forces de ${newFaction} (auparavant contrôlée par ${prevFaction})`);
+        await logSystemEvent("capture", capturers.length > 0 ? capturers.join(', ') : null, msgLog);
 
         // Envoi alerte Discord
         let couleurEmbed = 10066329; // Gris
         if (newFaction === "US") couleurEmbed = 3066993; // Bleu US
         else if (newFaction === "USSR") couleurEmbed = 15158332; // Rouge URSS
 
+        const fields = [];
+        if (capturers.length > 0) {
+            fields.push({ name: "🎖️ Opérateurs sur zone", value: capturers.map(name => `🪖 **${name}**`).join('\n'), inline: false });
+        }
+
         envoyerLogDiscord(
             "🚩 Base Stratégique Capturée",
             `La base de **${baseName}** a été capturée par les forces de **${newFaction === 'US' ? 'OTAN 🇺🇸' : newFaction === 'USSR' ? 'URSS ☭' : 'FIA 🔰'}**.\n*(Auparavant contrôlée par : ${prevFaction})*`,
-            couleurEmbed
+            couleurEmbed,
+            fields
         );
     }
 
@@ -861,7 +925,10 @@ app.post('/api/arma-event', async (req, res) => {
 // --- ROUTE 2 : STATS POUR LE SITE WEB ---
 app.get('/api/stats', (req, res) => {
     res.json({
-        server: serverData,
+        server: {
+            ...serverData,
+            currentSessionId: currentSessionId
+        },
         leaderboard: leaderboard
     });
 });

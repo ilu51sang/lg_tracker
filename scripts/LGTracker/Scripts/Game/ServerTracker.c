@@ -577,7 +577,14 @@ modded class SCR_BaseGameMode
 			}
 		}
 
-		SendTrackerData("kill", killerName + " vs " + victimName, victimName, victimFaction, killerName, killerFaction, typeTir, fatalHitZoneName);
+		string coordStr = "";
+		if (playerEntity)
+		{
+			vector pos = playerEntity.GetOrigin();
+			coordStr = " @ " + ReplaceString(pos[0].ToString(), ",", ".") + "," + ReplaceString(pos[2].ToString(), ",", ".");
+		}
+
+		SendTrackerData("kill", killerName + " vs " + victimName + coordStr, victimName, victimFaction, killerName, killerFaction, typeTir, fatalHitZoneName);
 	}
 
 	void OnChatMessage(PlayerController pc, string message, string channelName)

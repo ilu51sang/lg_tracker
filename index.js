@@ -32,7 +32,9 @@ const {
     startSession,
     endSession,
     getGameSessions,
-    closeActiveSessionsOnBoot
+    closeActiveSessionsOnBoot,
+    incrementSessionPlayerStat,
+    getSessionPlayerStats
 } = require('./db');
 
 // Lecture des variables d'environnement
@@ -335,7 +337,7 @@ app.post('/api/arma-event', async (req, res) => {
         serverData.equipes.URSS = [];
         serverData.equipes.FIA = [];
 
-        // Sauvegarde de fin de session pour tous les joueurs actifs
+        // Sauvegarde de fin de session pour tous les Gaulois actifs
         for (const player in activePlayerSessions) {
             const elapsedSeconds = Math.round((Date.now() - activePlayerSessions[player]) / 1000);
             if (elapsedSeconds > 0) {
@@ -343,6 +345,9 @@ app.post('/api/arma-event', async (req, res) => {
                     await addPlaytime(player, elapsedSeconds);
                     if (leaderboard[player]) {
                         leaderboard[player].playtime = (leaderboard[player].playtime || 0) + elapsedSeconds;
+                    }
+                    if (currentSessionId) {
+                        await incrementSessionPlayerStat(currentSessionId, player, 'playtime', elapsedSeconds);
                     }
                 } catch (e) {
                     console.error(`Error saving offline playtime for ${player}:`, e);
@@ -435,6 +440,9 @@ app.post('/api/arma-event', async (req, res) => {
                     await addPlaytime(player, elapsedSeconds);
                     if (leaderboard[player]) {
                         leaderboard[player].playtime = (leaderboard[player].playtime || 0) + elapsedSeconds;
+                    }
+                    if (currentSessionId) {
+                        await incrementSessionPlayerStat(currentSessionId, player, 'playtime', elapsedSeconds);
                     }
                 } catch (e) {
                     console.error(`Error saving periodic playtime for ${player}:`, e);
@@ -551,6 +559,9 @@ app.post('/api/arma-event', async (req, res) => {
                     if (leaderboard[nomJoueur]) {
                         leaderboard[nomJoueur].playtime = (leaderboard[nomJoueur].playtime || 0) + elapsedSeconds;
                     }
+                    if (currentSessionId) {
+                        await incrementSessionPlayerStat(currentSessionId, nomJoueur, 'playtime', elapsedSeconds);
+                    }
                 } catch (e) {
                     console.error(`Error saving disconnect playtime for ${nomJoueur}:`, e);
                 }
@@ -583,12 +594,18 @@ app.post('/api/arma-event', async (req, res) => {
         if (nomJoueur && leaderboard[nomJoueur]) {
             leaderboard[nomJoueur].morts += 1;
             await addDeath(nomJoueur);
+            if (currentSessionId) {
+                await incrementSessionPlayerStat(currentSessionId, nomJoueur, 'deaths', 1);
+            }
         }
         
         if (isTK) {
             if (killer && leaderboard[killer]) {
                 leaderboard[killer].teamkills += 1;
                 await addTeamkill(killer);
+                if (currentSessionId) {
+                    await incrementSessionPlayerStat(currentSessionId, killer, 'teamkills', 1);
+                }
 
                 // Incrément session TK et alerte critique
                 sessionTeamkills[killer] = (sessionTeamkills[killer] || 0) + 1;
@@ -604,6 +621,9 @@ app.post('/api/arma-event', async (req, res) => {
             if (killer && leaderboard[killer] && killer !== "IA / Bot" && killer !== nomJoueur) {
                 leaderboard[killer].kills += 1;
                 await addKill(killer);
+                if (currentSessionId) {
+                    await incrementSessionPlayerStat(currentSessionId, killer, 'kills', 1);
+                }
             }
         }
 
@@ -692,6 +712,9 @@ app.post('/api/arma-event', async (req, res) => {
                     if (leaderboard[name]) {
                         leaderboard[name].vehicles_destroyed += 1;
                         await addVehicleDestroyed(name);
+                        if (currentSessionId) {
+                            await incrementSessionPlayerStat(currentSessionId, name, 'vehicles_destroyed', 1);
+                        }
                     }
                 }
             }
@@ -717,6 +740,20 @@ app.get('/api/sessions', async (req, res) => {
         res.json(sessions);
     } catch (err) {
         console.error("❌ Erreur lors de la récupération des sessions :", err.message);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.get('/api/sessions/:id/players', async (req, res) => {
+    try {
+        const sessionId = parseInt(req.params.id);
+        if (isNaN(sessionId)) {
+            return res.status(400).json({ error: "ID de session invalide" });
+        }
+        const players = await getSessionPlayerStats(sessionId);
+        res.json(players);
+    } catch (err) {
+        console.error("❌ Erreur lors de la récupération des joueurs de la session :", err.message);
         res.status(500).json({ error: err.message });
     }
 });
@@ -1015,6 +1052,9 @@ app.get('/api/admin/sanctions/:player', async (req, res) => {
                                 await addPlaytime(player, elapsedSeconds);
                                 if (leaderboard[player]) {
                                     leaderboard[player].playtime = (leaderboard[player].playtime || 0) + elapsedSeconds;
+                                }
+                                if (currentSessionId) {
+                                    await incrementSessionPlayerStat(currentSessionId, player, 'playtime', elapsedSeconds);
                                 }
                             } catch (e) {
                                 console.error(`Error saving watchdog playtime for ${player}:`, e);

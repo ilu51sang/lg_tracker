@@ -184,6 +184,7 @@ async function initDatabase() {
     let querySanctions = "";
     let queryWatchlist = "";
     let querySessions = "";
+    let querySessionStats = "";
     if (isMysql) {
         queryNotes = `
             CREATE TABLE IF NOT EXISTS admin_notes (
@@ -224,6 +225,19 @@ async function initDatabase() {
                 total_tks INT DEFAULT 0
             );
         `;
+        querySessionStats = `
+            CREATE TABLE IF NOT EXISTS session_player_stats (
+                session_id INT NOT NULL,
+                player_name VARCHAR(255) NOT NULL,
+                kills INT DEFAULT 0,
+                deaths INT DEFAULT 0,
+                teamkills INT DEFAULT 0,
+                captures INT DEFAULT 0,
+                vehicles_destroyed INT DEFAULT 0,
+                playtime INT DEFAULT 0,
+                PRIMARY KEY (session_id, player_name)
+            );
+        `;
     } else if (isPostgres) {
         queryNotes = `
             CREATE TABLE IF NOT EXISTS admin_notes (
@@ -262,6 +276,19 @@ async function initDatabase() {
                 total_connections INT DEFAULT 0,
                 total_kills INT DEFAULT 0,
                 total_tks INT DEFAULT 0
+            );
+        `;
+        querySessionStats = `
+            CREATE TABLE IF NOT EXISTS session_player_stats (
+                session_id INT NOT NULL,
+                player_name VARCHAR(255) NOT NULL,
+                kills INT DEFAULT 0,
+                deaths INT DEFAULT 0,
+                teamkills INT DEFAULT 0,
+                captures INT DEFAULT 0,
+                vehicles_destroyed INT DEFAULT 0,
+                playtime INT DEFAULT 0,
+                PRIMARY KEY (session_id, player_name)
             );
         `;
     } else {
@@ -304,6 +331,19 @@ async function initDatabase() {
                 total_tks INTEGER DEFAULT 0
             );
         `;
+        querySessionStats = `
+            CREATE TABLE IF NOT EXISTS session_player_stats (
+                session_id INTEGER NOT NULL,
+                player_name VARCHAR(255) NOT NULL,
+                kills INTEGER DEFAULT 0,
+                deaths INTEGER DEFAULT 0,
+                teamkills INTEGER DEFAULT 0,
+                captures INTEGER DEFAULT 0,
+                vehicles_destroyed INTEGER DEFAULT 0,
+                playtime INTEGER DEFAULT 0,
+                PRIMARY KEY (session_id, player_name)
+            );
+        `;
     }
 
     if (isMysql) {
@@ -311,16 +351,19 @@ async function initDatabase() {
         await mysqlPool.query(querySanctions);
         await mysqlPool.query(queryWatchlist);
         await mysqlPool.query(querySessions);
+        await mysqlPool.query(querySessionStats);
     } else if (isPostgres) {
         await pgPool.query(queryNotes);
         await pgPool.query(querySanctions);
         await pgPool.query(queryWatchlist);
         await pgPool.query(querySessions);
+        await pgPool.query(querySessionStats);
     } else {
         dbSqlite.exec(queryNotes);
         dbSqlite.exec(querySanctions);
         dbSqlite.exec(queryWatchlist);
         dbSqlite.exec(querySessions);
+        dbSqlite.exec(querySessionStats);
     }
 }
 
@@ -955,6 +998,74 @@ async function closeActiveSessionsOnBoot() {
     }
 }
 
+async function ensureSessionPlayer(sessionId, playerName) {
+    if (isMysql) {
+        await mysqlPool.query(`
+            INSERT IGNORE INTO session_player_stats (session_id, player_name, kills, deaths, teamkills, captures, vehicles_destroyed, playtime)
+            VALUES (?, ?, 0, 0, 0, 0, 0, 0)
+        `, [sessionId, playerName]);
+    } else if (isPostgres) {
+        await pgPool.query(`
+            INSERT INTO session_player_stats (session_id, player_name, kills, deaths, teamkills, captures, vehicles_destroyed, playtime)
+            VALUES ($1, $2, 0, 0, 0, 0, 0, 0)
+            ON CONFLICT (session_id, player_name) DO NOTHING
+        `, [sessionId, playerName]);
+    } else {
+        dbSqlite.prepare(`
+            INSERT OR IGNORE INTO session_player_stats (session_id, player_name, kills, deaths, teamkills, captures, vehicles_destroyed, playtime)
+            VALUES (?, ?, 0, 0, 0, 0, 0, 0)
+        `).run(sessionId, playerName);
+    }
+}
+
+async function incrementSessionPlayerStat(sessionId, playerName, statColumn, amount = 1) {
+    if (!sessionId) return;
+    const ALLOWED_SESSION_STATS_COLUMNS = ['kills', 'deaths', 'teamkills', 'captures', 'vehicles_destroyed', 'playtime'];
+    if (!ALLOWED_SESSION_STATS_COLUMNS.includes(statColumn)) {
+        throw new Error(`Invalid stat column: ${statColumn}`);
+    }
+    
+    await ensureSessionPlayer(sessionId, playerName);
+    
+    if (isMysql) {
+        await mysqlPool.query(`
+            UPDATE session_player_stats
+            SET ${statColumn} = ${statColumn} + ?
+            WHERE session_id = ? AND player_name = ?
+        `, [amount, sessionId, playerName]);
+    } else if (isPostgres) {
+        await pgPool.query(`
+            UPDATE session_player_stats
+            SET ${statColumn} = ${statColumn} + $1
+            WHERE session_id = $2 AND player_name = $3
+        `, [amount, sessionId, playerName]);
+    } else {
+        dbSqlite.prepare(`
+            UPDATE session_player_stats
+            SET ${statColumn} = ${statColumn} + ?
+            WHERE session_id = ? AND player_name = ?
+        `).run(amount, sessionId, playerName);
+    }
+}
+
+async function getSessionPlayerStats(sessionId) {
+    const sql = `
+        SELECT player_name, kills, deaths, teamkills, captures, vehicles_destroyed, playtime
+        FROM session_player_stats
+        WHERE session_id = ?
+        ORDER BY kills DESC, playtime DESC
+    `;
+    if (isPostgres) {
+        const res = await pgPool.query(sql.replace('?', '$1'), [sessionId]);
+        return res.rows;
+    } else if (isMysql) {
+        const [rows] = await mysqlPool.query(sql, [sessionId]);
+        return rows;
+    } else {
+        return dbSqlite.prepare(sql).all(sessionId);
+    }
+}
+
 module.exports = {
     initDatabase,
     getLeaderboardObject,
@@ -984,5 +1095,7 @@ module.exports = {
     startSession,
     endSession,
     getGameSessions,
-    closeActiveSessionsOnBoot
+    closeActiveSessionsOnBoot,
+    incrementSessionPlayerStat,
+    getSessionPlayerStats
 };

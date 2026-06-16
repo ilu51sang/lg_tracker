@@ -40,7 +40,9 @@ const {
     getSessionPlayerStats,
     getSessionTimeline,
     getWeeklyLeaderboard,
-    getPlayerKillsDetails
+    getPlayerKillsDetails,
+    getSetting,
+    setSetting
 } = require('./db');
 
 // Lecture et gestion dynamique de la configuration des cartes
@@ -71,6 +73,7 @@ const DISCORD_WEBHOOK_URL = process.env.DISCORD_WEBHOOK_URL || "";
 const DISCORD_BOT_TOKEN = process.env.DISCORD_BOT_TOKEN || "";
 const COMPTEUR_CHANNEL_ID = process.env.DISCORD_COMPTEUR_CHANNEL_ID || "";
 const DISCORD_CHAT_WEBHOOK_URL = process.env.DISCORD_CHAT_WEBHOOK_URL || "";
+const DISCORD_WEEKLY_WEBHOOK_URL = process.env.DISCORD_WEEKLY_WEBHOOK_URL || "";
 
 // Suivi d'état session & anti-griefing
 let estPrecedemmentHorsLigne = true;
@@ -411,6 +414,142 @@ async function logSystemEvent(type, player, details) {
         await addLog(type, player, details);
     } catch (err) {
         console.error(`❌ Erreur lors de l'écriture du log système (${type}) :`, err.message);
+    }
+}
+
+function formaterTempsJeu(secondes) {
+    if (secondes <= 0) return "0m";
+    const h = Math.floor(secondes / 3600);
+    const m = Math.floor((secondes % 3600) / 60);
+    if (h > 0) return `${h}h ${m}m`;
+    return `${m}m`;
+}
+
+function BuildWeeklyLeaderboardText(weeklyData) {
+    let text = "";
+    const topData = weeklyData.slice(0, 10);
+    topData.forEach((p, idx) => {
+        const medal = idx === 0 ? "🥇" : idx === 1 ? "🥈" : idx === 2 ? "🥉" : `**#${idx + 1}**`;
+        const ratio = p.deaths > 0 ? (p.kills / p.deaths).toFixed(2) : p.kills.toFixed(2);
+        const playtimeStr = formaterTempsJeu(p.playtime);
+        
+        text += `${medal} **${p.player_name}**\n`;
+        text += ` ⚔️ **${p.kills}** Kills | 💀 **${p.deaths}** Morts | 📊 Ratio **${ratio}** | 🚩 **${p.captures}** Caps | 🕒 **${playtimeStr}**\n\n`;
+    });
+    
+    text += `*Classement complet et fiches de profil sur le [Centre Tactique](https://site-les-gaulois.github.io).*`;
+    return text;
+}
+
+async function actualiserDiscordWeeklyStats() {
+    if (!DISCORD_WEEKLY_WEBHOOK_URL) return;
+    if (DISCORD_WEEKLY_WEBHOOK_URL.includes("TON_WEBHOOK")) return;
+
+    try {
+        const now = new Date();
+        const day = now.getDay();
+        const diff = now.getDate() - day + (day === 0 ? -6 : 1);
+        const startOfWeek = new Date(now.setDate(diff));
+        startOfWeek.setHours(0, 0, 0, 0);
+        const currentWeekStr = startOfWeek.toISOString().slice(0, 10);
+        
+        let messageId = await getSetting('weekly_discord_msg_id');
+        let registeredWeek = await getSetting('weekly_discord_msg_week');
+
+        if (!registeredWeek) {
+            await setSetting('weekly_discord_msg_week', currentWeekStr);
+            registeredWeek = currentWeekStr;
+        }
+
+        // Si la semaine a changé, on clôture le message existant et on réinitialise
+        if (registeredWeek !== currentWeekStr) {
+            console.log(`⏰ [WEEKLY RESET] Transition de semaine détectée : ${registeredWeek} -> ${currentWeekStr}.`);
+            
+            if (messageId) {
+                const startStr = `${registeredWeek} 00:00:00`;
+                const endStr = `${currentWeekStr} 00:00:00`;
+                const pastWeeklyData = await getWeeklyLeaderboard(startStr, endStr);
+
+                const finalPayload = {
+                    embeds: [{
+                        title: `🏆 CLASSEMENT HEBDOMADAIRE (SEMAINE DU ${registeredWeek}) - CLÔTURÉ`,
+                        description: "Les compteurs ont été réinitialisés pour la nouvelle semaine !\n\n" + BuildWeeklyLeaderboardText(pastWeeklyData),
+                        color: 15158332,
+                        timestamp: new Date().toISOString()
+                    }]
+                };
+
+                try {
+                    console.log(`📦 [WEEKLY RESET] Envoi de l'embed de clôture pour le message ${messageId}...`);
+                    await fetch(`${DISCORD_WEEKLY_WEBHOOK_URL}/messages/${messageId}`, {
+                        method: 'PATCH',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(finalPayload)
+                    });
+                } catch (e) {
+                    console.error("❌ Erreur lors de l'envoi de la clôture sur Discord :", e.message);
+                }
+            }
+
+            await setSetting('weekly_discord_msg_id', '');
+            await setSetting('weekly_discord_msg_week', currentWeekStr);
+            messageId = null;
+            registeredWeek = currentWeekStr;
+        }
+
+        const weeklyData = await getWeeklyLeaderboard();
+
+        let description = "⚡ **Opérateurs les plus actifs cette semaine (depuis lundi 00h00) :**\n\n";
+
+        if (weeklyData.length === 0) {
+            description += "*Aucune opération menée pour le moment cette semaine.*";
+        } else {
+            description += BuildWeeklyLeaderboardText(weeklyData);
+        }
+
+        const payload = {
+            embeds: [{
+                title: "⚡ CLASSEMENT HEBDOMADAIRE LIVE",
+                description: description,
+                color: 3447003,
+                footer: {
+                    text: "Mise à jour automatique chaque minute • Remise à zéro le lundi à 00h00"
+                },
+                timestamp: new Date().toISOString()
+            }]
+        };
+
+        if (messageId) {
+            const res = await fetch(`${DISCORD_WEEKLY_WEBHOOK_URL}/messages/${messageId}`, {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+
+            if (!res.ok) {
+                console.warn("⚠️ [WEEKLY STATS] Le message d'embed hebdomadaire n'a pas pu être modifié. Suppression de l'ID invalide.");
+                await setSetting('weekly_discord_msg_id', '');
+            }
+        } else {
+            const res = await fetch(`${DISCORD_WEEKLY_WEBHOOK_URL}?wait=true`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+
+            if (res.ok) {
+                const resData = await res.json();
+                if (resData && resData.id) {
+                    await setSetting('weekly_discord_msg_id', resData.id);
+                    console.log(`✅ [WEEKLY STATS] Nouvel embed hebdomadaire créé sur Discord (ID: ${resData.id})`);
+                }
+            } else {
+                console.error("❌ [WEEKLY STATS] Impossible d'envoyer l'embed hebdomadaire sur Discord :", res.statusText);
+            }
+        }
+
+    } catch (err) {
+        console.error("❌ [WEEKLY STATS] Erreur de mise à jour de l'embed hebdomadaire :", err.message);
     }
 }
 
@@ -801,7 +940,7 @@ app.post('/api/arma-event', async (req, res) => {
 
     if (type === "chat") {
         let channelName = killer || "Global";
-        let message = typeTir || "";
+        let message = (typeTir || "").trim();
         serverData.chatfeed.unshift({
             horaire: new Date().toISOString(),
             player: player,
@@ -815,6 +954,49 @@ app.post('/api/arma-event', async (req, res) => {
 
         // Relais Discord en direct
         await envoyerChatDiscord(player, faction, channelName, message);
+
+        // --- COMMANDES DE CHAT IN-GAME ---
+        if (message.startsWith("!")) {
+            const args = message.split(" ");
+            const command = args[0].toLowerCase();
+            const targetPlayer = player; // L'expéditeur du message
+
+            if (command === "!ping") {
+                pendingCommands.push(`warn:${targetPlayer}:Pong ! 🏓`);
+            }
+            else if (command === "!stats") {
+                let searchedName = targetPlayer;
+                if (args.length > 1) {
+                    searchedName = args.slice(1).join(" ").trim();
+                }
+
+                // Recherche dans le cache leaderboard en mémoire
+                let pStats = leaderboard[searchedName];
+                if (!pStats) {
+                    // Recherche insensible à la casse
+                    const keys = Object.keys(leaderboard);
+                    const matchKey = keys.find(k => k.toLowerCase() === searchedName.toLowerCase());
+                    if (matchKey) pStats = leaderboard[matchKey];
+                }
+
+                if (pStats) {
+                    const kills = pStats.kills || 0;
+                    const deaths = pStats.morts || pStats.deaths || 0;
+                    const ratio = deaths > 0 ? (kills / deaths).toFixed(2) : kills.toFixed(2);
+                    const captures = pStats.captures || 0;
+                    const playtimeStr = formaterTempsJeu(pStats.playtime || 0);
+
+                    const statsMsg = `📈 Stats : ⚔️ ${kills} Kills | 💀 ${deaths} Morts | 📊 Ratio ${ratio} | 🚩 ${captures} Captures | 🕒 ${playtimeStr}`;
+                    pendingCommands.push(`warn:${targetPlayer}:${statsMsg}`);
+                } else {
+                    pendingCommands.push(`warn:${targetPlayer}:Opérateur "${searchedName}" introuvable.`);
+                }
+            }
+            else if (command === "!aide" || command === "!help") {
+                const aideMsg = `Dispo : !stats (vos stats) | !stats [nom] (stats d'un joueur) | !ping`;
+                pendingCommands.push(`warn:${targetPlayer}:${aideMsg}`);
+            }
+        }
     }
 
     if (type === "capture") {
@@ -931,7 +1113,9 @@ app.post('/api/arma-event', async (req, res) => {
     }
 
     serverData.joueursCount = serverData.equipes.US.length + serverData.equipes.URSS.length + (serverData.equipes.FIA ? serverData.equipes.FIA.length : 0);
-    res.status(200).send({ message: "OK" });
+    const cmds = [...pendingCommands];
+    pendingCommands = [];
+    res.status(200).send({ message: "OK", commands: cmds });
 });
 
 // --- ROUTE 2 : STATS POUR LE SITE WEB ---
@@ -1487,10 +1671,11 @@ app.get('/api/admin/sanctions/:player', async (req, res) => {
             }
         }, 10000);
 
-        // Enregistrement périodique des métriques d'activité et rafraîchissement Discord
+        // Enregistrement périodique des métriques, rafraîchissement Discord et stats hebdo
         setInterval(async () => {
             await enregistrerMetriqueSiBesoin();
             await rafraichirSalonCompteur();
+            await actualiserDiscordWeeklyStats();
         }, 60000);
 
         app.listen(PORT, () => console.log(`🤖 Cerveau V2 connecté sur le port ${PORT}`));

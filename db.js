@@ -346,24 +346,34 @@ async function initDatabase() {
         `;
     }
 
+    const querySettings = `
+        CREATE TABLE IF NOT EXISTS server_settings (
+            setting_key VARCHAR(255) PRIMARY KEY,
+            setting_value TEXT
+        );
+    `;
+
     if (isMysql) {
         await mysqlPool.query(queryNotes);
         await mysqlPool.query(querySanctions);
         await mysqlPool.query(queryWatchlist);
         await mysqlPool.query(querySessions);
         await mysqlPool.query(querySessionStats);
+        await mysqlPool.query(querySettings);
     } else if (isPostgres) {
         await pgPool.query(queryNotes);
         await pgPool.query(querySanctions);
         await pgPool.query(queryWatchlist);
         await pgPool.query(querySessions);
         await pgPool.query(querySessionStats);
+        await pgPool.query(querySettings);
     } else {
         dbSqlite.exec(queryNotes);
         dbSqlite.exec(querySanctions);
         dbSqlite.exec(queryWatchlist);
         dbSqlite.exec(querySessions);
         dbSqlite.exec(querySessionStats);
+        dbSqlite.exec(querySettings);
     }
 }
 
@@ -1142,10 +1152,18 @@ async function getSessionTimeline(sessionId) {
     }
 }
 
-async function getWeeklyLeaderboard() {
-    // Calcul de la date d'il y a 7 jours (au format YYYY-MM-DD HH:mm:ss)
-    const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 19).replace('T', ' ');
-    const sql = `
+async function getWeeklyLeaderboard(customStart = null, customEnd = null) {
+    let startStr = customStart;
+    if (!startStr) {
+        const now = new Date();
+        const day = now.getDay();
+        const diff = now.getDate() - day + (day === 0 ? -6 : 1);
+        const startOfWeek = new Date(now.setDate(diff));
+        startOfWeek.setHours(0, 0, 0, 0);
+        startStr = startOfWeek.toISOString().slice(0, 19).replace('T', ' ');
+    }
+
+    let sql = `
         SELECT 
             sps.player_name,
             SUM(sps.kills) as kills,
@@ -1157,11 +1175,26 @@ async function getWeeklyLeaderboard() {
         FROM session_player_stats sps
         INNER JOIN game_sessions gs ON sps.session_id = gs.id
         WHERE gs.started_at >= ?
+    `;
+    const params = [startStr];
+
+    if (customEnd) {
+        sql += " AND gs.started_at < ?";
+        params.push(customEnd);
+    }
+
+    sql += `
         GROUP BY sps.player_name
         ORDER BY kills DESC, playtime DESC
     `;
+
     if (isPostgres) {
-        const res = await pgPool.query(sql.replace('?', '$1'), [sevenDaysAgo]);
+        let pgSql = sql;
+        let paramIndex = 1;
+        while (pgSql.includes('?')) {
+            pgSql = pgSql.replace('?', `$${paramIndex++}`);
+        }
+        const res = await pgPool.query(pgSql, params);
         return res.rows.map(row => ({
             player_name: row.player_name,
             kills: parseInt(row.kills) || 0,
@@ -1172,7 +1205,7 @@ async function getWeeklyLeaderboard() {
             playtime: parseInt(row.playtime) || 0
         }));
     } else if (isMysql) {
-        const [rows] = await mysqlPool.query(sql, [sevenDaysAgo]);
+        const [rows] = await mysqlPool.query(sql, params);
         return rows.map(row => ({
             player_name: row.player_name,
             kills: parseInt(row.kills) || 0,
@@ -1183,7 +1216,7 @@ async function getWeeklyLeaderboard() {
             playtime: parseInt(row.playtime) || 0
         }));
     } else {
-        const rows = dbSqlite.prepare(sql).all(sevenDaysAgo);
+        const rows = dbSqlite.prepare(sql).all(...params);
         return rows.map(row => ({
             player_name: row.player_name,
             kills: parseInt(row.kills) || 0,
@@ -1206,6 +1239,41 @@ async function getPlayerKillsDetails(playerName) {
         return rows;
     } else {
         return dbSqlite.prepare(sql).all(playerName);
+    }
+}
+
+async function getSetting(key) {
+    const sql = "SELECT setting_value FROM server_settings WHERE setting_key = ?";
+    if (isPostgres) {
+        const res = await pgPool.query(sql.replace('?', '$1'), [key]);
+        return res.rows[0] ? res.rows[0].setting_value : null;
+    } else if (isMysql) {
+        const [rows] = await mysqlPool.query(sql, [key]);
+        return rows[0] ? rows[0].setting_value : null;
+    } else {
+        const row = dbSqlite.prepare(sql).get(key);
+        return row ? row.setting_value : null;
+    }
+}
+
+async function setSetting(key, value) {
+    if (isPostgres) {
+        await pgPool.query(`
+            INSERT INTO server_settings (setting_key, setting_value)
+            VALUES ($1, $2)
+            ON CONFLICT (setting_key) DO UPDATE SET setting_value = $2
+        `, [key, value]);
+    } else if (isMysql) {
+        await mysqlPool.query(`
+            INSERT INTO server_settings (setting_key, setting_value)
+            VALUES (?, ?)
+            ON DUPLICATE KEY UPDATE setting_value = ?
+        `, [key, value, value]);
+    } else {
+        dbSqlite.prepare(`
+            INSERT OR REPLACE INTO server_settings (setting_key, setting_value)
+            VALUES (?, ?)
+        `).run(key, value);
     }
 }
 
@@ -1243,5 +1311,7 @@ module.exports = {
     incrementSessionPlayerStat,
     getSessionTimeline,
     getWeeklyLeaderboard,
-    getPlayerKillsDetails
+    getPlayerKillsDetails,
+    getSetting,
+    setSetting
 };

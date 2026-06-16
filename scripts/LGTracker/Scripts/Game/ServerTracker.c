@@ -505,17 +505,18 @@ modded class SCR_BaseGameMode
 		}
 
 		string typeTir = "Inconnu";
-		int typeId = killer.GetInstigatorType();
+		InstigatorType typeId = killer.GetInstigatorType();
 
-		if (typeId == 2) typeTir = "Tir par Balle (" + nomArme + ")";
-		else if (typeId == 3) typeTir = "Ecrase / Accident de vehicule (" + nomArme + ")";
-		else if (typeId == 0 || typeId == 4)
+		if (typeId == InstigatorType.INSTIGATOR_PLAYER || typeId == InstigatorType.INSTIGATOR_AI)
 		{
-			if (nomArme.Contains("Ural") || nomArme.Contains("BTR") || nomArme.Contains("Hummer") || nomArme.Contains("M151") || nomArme.Contains("UAZ"))
+			if (nomArme.Contains("Ural") || nomArme.Contains("BTR") || nomArme.Contains("Hummer") || nomArme.Contains("M151") || nomArme.Contains("UAZ") || nomArme.Contains("Car") || nomArme.Contains("Truck"))
 				typeTir = "Ecrase / Accident de vehicule (" + nomArme + ")";
-			else typeTir = "Explosion / Mortier (" + nomArme + ")";
+			else if (nomArme.Contains("Grenade") || nomArme.Contains("Mine") || nomArme.Contains("Explosive") || nomArme.Contains("Mortar") || nomArme.Contains("RPG") || nomArme.Contains("HE"))
+				typeTir = "Explosion / Mortier (" + nomArme + ")";
+			else
+				typeTir = "Tir par Balle (" + nomArme + ")";
 		}
-		else if (typeId == 1)
+		else
 		{
 			typeTir = "Suicide / Chute / Environnement";
 			if (killerName == "Un sifflement dans le noir" || killerName == "IA / Bot")

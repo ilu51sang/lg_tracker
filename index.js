@@ -74,6 +74,7 @@ const DISCORD_BOT_TOKEN = process.env.DISCORD_BOT_TOKEN || "";
 const COMPTEUR_CHANNEL_ID = process.env.DISCORD_COMPTEUR_CHANNEL_ID || "";
 const DISCORD_CHAT_WEBHOOK_URL = process.env.DISCORD_CHAT_WEBHOOK_URL || "";
 const DISCORD_WEEKLY_WEBHOOK_URL = process.env.DISCORD_WEEKLY_WEBHOOK_URL || "";
+const DISCORD_SESSIONS_WEBHOOK_URL = process.env.DISCORD_SESSIONS_WEBHOOK_URL || "";
 
 // Suivi d'état session & anti-griefing
 let estPrecedemmentHorsLigne = true;
@@ -553,6 +554,68 @@ async function actualiserDiscordWeeklyStats() {
     }
 }
 
+async function envoyerRapportFinSession(sessionId) {
+    const webhookUrl = DISCORD_SESSIONS_WEBHOOK_URL || DISCORD_WEBHOOK_URL;
+    if (!webhookUrl) return;
+
+    try {
+        const sessionStats = await getSessionPlayerStats(sessionId);
+        
+        let dureeText = "Durée inconnue";
+        if (sessionStartTime > 0) {
+            const dureeMs = Date.now() - sessionStartTime;
+            const dureeMin = Math.round(dureeMs / 60000);
+            const heures = Math.floor(dureeMin / 60);
+            const minutes = dureeMin % 60;
+            dureeText = `${heures}h${minutes.toString().padStart(2, '0')}`;
+        }
+
+        const currentMap = serverData.map ? (serverData.map.mapName || "Eden") : "Eden";
+
+        let leaderboardText = "";
+        if (sessionStats.length === 0) {
+            leaderboardText = "*Aucun opérateur n'a enregistré de statistique durant cette session.*";
+        } else {
+            const top10 = sessionStats.slice(0, 10);
+            top10.forEach((p, idx) => {
+                const medal = idx === 0 ? "🥇" : idx === 1 ? "🥈" : idx === 2 ? "🥉" : `**#${idx + 1}**`;
+                const ratio = p.deaths > 0 ? (p.kills / p.deaths).toFixed(2) : p.kills.toFixed(2);
+                const playtimeStr = formaterTempsJeu(p.playtime);
+                leaderboardText += `${medal} **${p.player_name}**\n ⚔️ **${p.kills}** Kills | 💀 **${p.deaths}** Morts | 📊 Ratio **${ratio}** | 🚩 **${p.captures}** Caps | 🕒 **${playtimeStr}**\n\n`;
+            });
+        }
+
+        const payload = {
+            embeds: [{
+                title: `📊 RAPPORT DE COMBAT - OPÉRATION ${currentMap.toUpperCase()}`,
+                description: `L'opération s'est achevée après **${dureeText}** de combat.\n\n⚔️ **TOTAL DES ENGAGEMENTS : ${sessionKillCount} éliminations**\n👥 **OPÉRATEURS DÉPLOYÉS : ${sessionConnections.size}**\n⚠️ **TIRS FRATRICIDES : ${sessionTKCount}**`,
+                color: 3447003,
+                fields: [
+                    {
+                        name: "🏆 TOP 10 DES OPÉRATEURS DE LA SESSION",
+                        value: leaderboardText,
+                        inline: false
+                    }
+                ],
+                timestamp: new Date().toISOString(),
+                footer: {
+                    text: "Centre Tactique • Les Gaulois"
+                }
+            }]
+        };
+
+        await fetch(webhookUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        });
+
+        console.log(`✅ [SESSION REPORT] Rapport envoyé sur Discord pour la session ${sessionId}.`);
+    } catch (err) {
+        console.error("❌ [SESSION REPORT] Erreur lors de l'envoi du rapport de session :", err.message);
+    }
+}
+
 let dernierEnregistrementMetrique = 0;
 async function enregistrerMetriqueSiBesoin(force = false) {
     const maintenant = Date.now();
@@ -621,8 +684,10 @@ app.post('/api/arma-event', async (req, res) => {
         await logSystemEvent("offline", null, "Le serveur a été arrêté proprement.");
         if (currentSessionId) {
             try {
-                await endSession(currentSessionId, sessionConnections.size, sessionKillCount, sessionTKCount);
-                console.log(`🎮 [SESSION ENDED] ID: ${currentSessionId} updated in DB.`);
+                const endedSessionId = currentSessionId;
+                await endSession(endedSessionId, sessionConnections.size, sessionKillCount, sessionTKCount);
+                console.log(`🎮 [SESSION ENDED] ID: ${endedSessionId} updated in DB.`);
+                await envoyerRapportFinSession(endedSessionId);
                 currentSessionId = null;
             } catch (e) {
                 console.error("❌ Erreur d'enregistrement de fin de session :", e.message);
@@ -995,8 +1060,31 @@ app.post('/api/arma-event', async (req, res) => {
                     }
                 }
             }
+            else if (command === "!top") {
+                if (!currentSessionId) {
+                    pendingCommands.push(`warn:${targetPlayer}:Aucune session active sur le serveur.`);
+                } else {
+                    try {
+                        const sessionStats = await getSessionPlayerStats(currentSessionId);
+                        if (sessionStats.length === 0) {
+                            pendingCommands.push(`warn:${targetPlayer}:Aucune statistique enregistree pour cette session.`);
+                        } else {
+                            const top3 = sessionStats.slice(0, 3);
+                            let topMsg = "Top 3 Session - ";
+                            top3.forEach((p, idx) => {
+                                if (idx > 0) topMsg += " | ";
+                                topMsg += `#${idx + 1} ${p.player_name} (${p.kills} Kills)`;
+                            });
+                            pendingCommands.push(`warn:${targetPlayer}:${topMsg}`);
+                        }
+                    } catch (err) {
+                        console.error("❌ Erreur de recuperation du top session :", err.message);
+                        pendingCommands.push(`warn:${targetPlayer}:Erreur de liaison satellite.`);
+                    }
+                }
+            }
             else if (command === "!aide" || command === "!help") {
-                const aideMsg = `Dispo : !stats (vos stats) | !stats [nom] (stats d'un joueur) | !ping`;
+                const aideMsg = `Dispo : !stats (vos stats) | !stats [nom] | !top (top 3 partie) | !ping`;
                 pendingCommands.push(`warn:${targetPlayer}:${aideMsg}`);
             }
         }
@@ -1639,8 +1727,10 @@ app.get('/api/admin/sanctions/:player', async (req, res) => {
                     await logSystemEvent("offline", null, "Signal satellite perdu (le serveur ne répond plus).");
                     if (currentSessionId) {
                         try {
-                            await endSession(currentSessionId, sessionConnections.size, sessionKillCount, sessionTKCount);
-                            console.log(`🎮 [SESSION ENDED BY WATCHDOG] ID: ${currentSessionId} updated in DB.`);
+                            const endedSessionId = currentSessionId;
+                            await endSession(endedSessionId, sessionConnections.size, sessionKillCount, sessionTKCount);
+                            console.log(`🎮 [SESSION ENDED BY WATCHDOG] ID: ${endedSessionId} updated in DB.`);
+                            await envoyerRapportFinSession(endedSessionId);
                             currentSessionId = null;
                         } catch (e) {
                             console.error("❌ Erreur d'enregistrement de fin de session par watchdog :", e.message);

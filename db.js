@@ -1309,6 +1309,7 @@ module.exports = {
     getActiveSession,
     closeActiveSessionsOnBoot,
     incrementSessionPlayerStat,
+    getSessionPlayerStats,
     getSessionTimeline,
     getWeeklyLeaderboard,
     getPlayerKillsDetails,

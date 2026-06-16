@@ -970,26 +970,29 @@ app.post('/api/arma-event', async (req, res) => {
                     searchedName = args.slice(1).join(" ").trim();
                 }
 
-                // Recherche dans le cache leaderboard en mémoire
-                let pStats = leaderboard[searchedName];
-                if (!pStats) {
-                    // Recherche insensible à la casse
-                    const keys = Object.keys(leaderboard);
-                    const matchKey = keys.find(k => k.toLowerCase() === searchedName.toLowerCase());
-                    if (matchKey) pStats = leaderboard[matchKey];
-                }
-
-                if (pStats) {
-                    const kills = pStats.kills || 0;
-                    const deaths = pStats.morts || pStats.deaths || 0;
-                    const ratio = deaths > 0 ? (kills / deaths).toFixed(2) : kills.toFixed(2);
-                    const captures = pStats.captures || 0;
-                    const playtimeStr = formaterTempsJeu(pStats.playtime || 0);
-
-                    const statsMsg = `📈 Stats : ⚔️ ${kills} Kills | 💀 ${deaths} Morts | 📊 Ratio ${ratio} | 🚩 ${captures} Captures | 🕒 ${playtimeStr}`;
-                    pendingCommands.push(`warn:${targetPlayer}:${statsMsg}`);
+                if (!currentSessionId) {
+                    pendingCommands.push(`warn:${targetPlayer}:Aucune session active sur le serveur.`);
                 } else {
-                    pendingCommands.push(`warn:${targetPlayer}:Opérateur "${searchedName}" introuvable.`);
+                    try {
+                        const sessionStats = await getSessionPlayerStats(currentSessionId);
+                        const pStats = sessionStats.find(s => s.player_name.toLowerCase() === searchedName.toLowerCase());
+
+                        if (pStats) {
+                            const kills = pStats.kills || 0;
+                            const deaths = pStats.deaths || 0;
+                            const ratio = deaths > 0 ? (kills / deaths).toFixed(2) : kills.toFixed(2);
+                            const captures = pStats.captures || 0;
+                            const playtimeStr = formaterTempsJeu(pStats.playtime || 0);
+
+                            const statsMsg = `📈 Session : ⚔️ ${kills} Kills | 💀 ${deaths} Morts | 📊 Ratio ${ratio} | 🚩 ${captures} Caps | 🕒 ${playtimeStr}`;
+                            pendingCommands.push(`warn:${targetPlayer}:${statsMsg}`);
+                        } else {
+                            pendingCommands.push(`warn:${targetPlayer}:Aucune donnée de session pour "${searchedName}" pour le moment.`);
+                        }
+                    } catch (err) {
+                        console.error("❌ Erreur de récupération des stats de session :", err.message);
+                        pendingCommands.push(`warn:${targetPlayer}:Erreur de liaison satellite.`);
+                    }
                 }
             }
             else if (command === "!aide" || command === "!help") {

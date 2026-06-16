@@ -38,7 +38,9 @@ const {
     closeActiveSessionsOnBoot,
     incrementSessionPlayerStat,
     getSessionPlayerStats,
-    getSessionTimeline
+    getSessionTimeline,
+    getWeeklyLeaderboard,
+    getPlayerKillsDetails
 } = require('./db');
 
 // Lecture et gestion dynamique de la configuration des cartes
@@ -985,6 +987,131 @@ app.get('/api/sessions/:id/timeline', async (req, res) => {
         res.json(formattedTimeline);
     } catch (err) {
         console.error("❌ Erreur lors de la récupération de la timeline de session :", err.message);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// --- ROUTE DU CLASSEMENT HEBDOMADAIRE ---
+app.get('/api/leaderboard/weekly', async (req, res) => {
+    try {
+        const weeklyData = await getWeeklyLeaderboard();
+        res.json(weeklyData);
+    } catch (err) {
+        console.error("❌ Erreur lors de la récupération du classement hebdomadaire :", err.message);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// --- ROUTE POUR LA FICHE PROFIL PUBLIQUE D'UN JOUEUR ---
+app.get('/api/players/:name', async (req, res) => {
+    try {
+        const playerName = req.params.name;
+        
+        // 1. Récupérer le profil du joueur
+        const profile = await getPlayerProfile(playerName);
+        if (!profile || !profile.stats) {
+            return res.status(404).json({ error: "Joueur non trouvé" });
+        }
+        
+        const stats = profile.stats;
+        
+        // 2. Calculer le grade militaire
+        const kills = stats.kills || 0;
+        let grade = "Recrue";
+        let gradeIcon = "🪖";
+        if (kills >= 2000) {
+            grade = "Général d'Armée";
+            gradeIcon = "⭐⭐⭐⭐⭐";
+        } else if (kills >= 1000) {
+            grade = "Major";
+            gradeIcon = "👑";
+        } else if (kills >= 500) {
+            grade = "Capitaine";
+            gradeIcon = "⚓";
+        } else if (kills >= 250) {
+            grade = "Lieutenant";
+            gradeIcon = "⚡";
+        } else if (kills >= 100) {
+            grade = "Sergent";
+            gradeIcon = "🛡️";
+        } else if (kills >= 30) {
+            grade = "Caporal";
+            gradeIcon = "🎖️";
+        } else if (kills >= 10) {
+            grade = "Soldat de 1ère classe";
+            gradeIcon = "🔰";
+        } else if (kills > 0) {
+            grade = "Soldat de 2ème classe";
+            gradeIcon = "🪖";
+        }
+        
+        // 3. Badges / Titres honorifiques
+        const badges = [];
+        const playtimeHours = (stats.playtime || 0) / 3600;
+        const kd = stats.deaths > 0 ? (stats.kills / stats.deaths) : stats.kills;
+        
+        if (stats.vehicles_destroyed >= 5) {
+            badges.push({ name: "Briseur de Blindés", icon: "💥", desc: "A détruit plus de 5 véhicules ennemis." });
+        }
+        if (stats.captures >= 10) {
+            badges.push({ name: "Conquérant", icon: "🚩", desc: "A capturé plus de 10 zones." });
+        }
+        if (kills >= 50 && kd >= 2.0) {
+            badges.push({ name: "Survivant d'Élite", icon: "💀", desc: "Ratio K/D supérieur à 2.0 avec plus de 50 kills." });
+        }
+        if (playtimeHours >= 20) {
+            badges.push({ name: "Vétéran", icon: "⏳", desc: "Plus de 20 heures passées sur le champ de bataille." });
+        }
+        if (stats.teamkills === 0 && kills >= 30) {
+            badges.push({ name: "Frère d'Armes Idéal", icon: "🤝", desc: "Zéro tir fratricide sur plus de 30 éliminations." });
+        }
+        if (kills >= 500) {
+            badges.push({ name: "Terreur Tactique", icon: "🔥", desc: "Plus de 500 éliminations au compteur." });
+        }
+        
+        // 4. Calcul des armes favorites via getPlayerKillsDetails
+        const killLogs = await getPlayerKillsDetails(playerName);
+        const weaponCounts = {};
+        killLogs.forEach(log => {
+            const match = log.details.match(/\(([^)]+)\)/);
+            if (match && match[1]) {
+                const weapon = match[1].trim();
+                weaponCounts[weapon] = (weaponCounts[weapon] || 0) + 1;
+            }
+        });
+        
+        const favoriteWeapons = Object.entries(weaponCounts)
+            .sort((a, b) => b[1] - a[1])
+            .slice(0, 3)
+            .map(entry => ({ name: entry[0], kills: entry[1] }));
+
+        // 5. Activités récentes publiques (uniquement kills, captures, véhicules détruits)
+        const recentActivities = (profile.recent_logs || []).filter(log => 
+            ['kill', 'teamkill', 'capture', 'vehicle_destroyed'].includes(log.event_type)
+        ).slice(0, 10).map(log => ({
+            event_type: log.event_type,
+            details: log.details,
+            created_at: normaliserDate(log.created_at)
+        }));
+
+        res.json({
+            stats: {
+                player_name: stats.player_name,
+                playtime: stats.playtime,
+                kills: stats.kills,
+                deaths: stats.deaths || stats.morts || 0,
+                teamkills: stats.teamkills,
+                captures: stats.captures,
+                vehicles_destroyed: stats.vehicles_destroyed
+            },
+            grade,
+            gradeIcon,
+            badges,
+            favoriteWeapons,
+            recentActivities
+        });
+    } catch (err) {
+        console.error("❌ Erreur lors de la récupération de la fiche publique du joueur :", err.message);
         res.status(500).json({ error: err.message });
     }
 });

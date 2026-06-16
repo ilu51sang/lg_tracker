@@ -1142,6 +1142,73 @@ async function getSessionTimeline(sessionId) {
     }
 }
 
+async function getWeeklyLeaderboard() {
+    // Calcul de la date d'il y a 7 jours (au format YYYY-MM-DD HH:mm:ss)
+    const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 19).replace('T', ' ');
+    const sql = `
+        SELECT 
+            sps.player_name,
+            SUM(sps.kills) as kills,
+            SUM(sps.deaths) as deaths,
+            SUM(sps.teamkills) as teamkills,
+            SUM(sps.captures) as captures,
+            SUM(sps.vehicles_destroyed) as vehicles_destroyed,
+            SUM(sps.playtime) as playtime
+        FROM session_player_stats sps
+        INNER JOIN game_sessions gs ON sps.session_id = gs.id
+        WHERE gs.started_at >= ?
+        GROUP BY sps.player_name
+        ORDER BY kills DESC, playtime DESC
+    `;
+    if (isPostgres) {
+        const res = await pgPool.query(sql.replace('?', '$1'), [sevenDaysAgo]);
+        return res.rows.map(row => ({
+            player_name: row.player_name,
+            kills: parseInt(row.kills) || 0,
+            deaths: parseInt(row.deaths) || 0,
+            teamkills: parseInt(row.teamkills) || 0,
+            captures: parseInt(row.captures) || 0,
+            vehicles_destroyed: parseInt(row.vehicles_destroyed) || 0,
+            playtime: parseInt(row.playtime) || 0
+        }));
+    } else if (isMysql) {
+        const [rows] = await mysqlPool.query(sql, [sevenDaysAgo]);
+        return rows.map(row => ({
+            player_name: row.player_name,
+            kills: parseInt(row.kills) || 0,
+            deaths: parseInt(row.deaths) || 0,
+            teamkills: parseInt(row.teamkills) || 0,
+            captures: parseInt(row.captures) || 0,
+            vehicles_destroyed: parseInt(row.vehicles_destroyed) || 0,
+            playtime: parseInt(row.playtime) || 0
+        }));
+    } else {
+        const rows = dbSqlite.prepare(sql).all(sevenDaysAgo);
+        return rows.map(row => ({
+            player_name: row.player_name,
+            kills: parseInt(row.kills) || 0,
+            deaths: parseInt(row.deaths) || 0,
+            teamkills: parseInt(row.teamkills) || 0,
+            captures: parseInt(row.captures) || 0,
+            vehicles_destroyed: parseInt(row.vehicles_destroyed) || 0,
+            playtime: parseInt(row.playtime) || 0
+        }));
+    }
+}
+
+async function getPlayerKillsDetails(playerName) {
+    const sql = "SELECT details FROM system_logs WHERE player_name = ? AND event_type = 'kill' ORDER BY id DESC LIMIT 100";
+    if (isPostgres) {
+        const res = await pgPool.query(sql.replace('?', '$1'), [playerName]);
+        return res.rows;
+    } else if (isMysql) {
+        const [rows] = await mysqlPool.query(sql, [playerName]);
+        return rows;
+    } else {
+        return dbSqlite.prepare(sql).all(playerName);
+    }
+}
+
 module.exports = {
     initDatabase,
     getLeaderboardObject,
@@ -1174,6 +1241,7 @@ module.exports = {
     getActiveSession,
     closeActiveSessionsOnBoot,
     incrementSessionPlayerStat,
-    getSessionPlayerStats,
-    getSessionTimeline
+    getSessionTimeline,
+    getWeeklyLeaderboard,
+    getPlayerKillsDetails
 };

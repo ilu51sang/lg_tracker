@@ -1081,6 +1081,15 @@ app.get('/api/players/:name', async (req, res) => {
         });
         
         const favoriteWeapons = Object.entries(weaponCounts)
+            .filter(entry => {
+                const wName = entry[0].toLowerCase();
+                return !wName.includes("suicide") && 
+                       !wName.includes("chute") && 
+                       !wName.includes("environnement") && 
+                       !wName.includes("inconnu") &&
+                       !wName.includes("collision") &&
+                       !wName.includes("accident");
+            })
             .sort((a, b) => b[1] - a[1])
             .slice(0, 3)
             .map(entry => ({ name: entry[0], kills: entry[1] }));

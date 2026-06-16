@@ -962,7 +962,7 @@ app.post('/api/arma-event', async (req, res) => {
             const targetPlayer = player; // L'expéditeur du message
 
             if (command === "!ping") {
-                pendingCommands.push(`warn:${targetPlayer}:Pong ! 🏓`);
+                pendingCommands.push(`warn:${targetPlayer}:Pong !`);
             }
             else if (command === "!stats") {
                 let searchedName = targetPlayer;
@@ -978,19 +978,19 @@ app.post('/api/arma-event', async (req, res) => {
                         const pStats = sessionStats.find(s => s.player_name.toLowerCase() === searchedName.toLowerCase());
 
                         if (pStats) {
-                            const kills = pStats.kills || 0;
-                            const deaths = pStats.deaths || 0;
+                            const kills = parseInt(pStats.kills) || 0;
+                            const deaths = parseInt(pStats.deaths) || 0;
                             const ratio = deaths > 0 ? (kills / deaths).toFixed(2) : kills.toFixed(2);
-                            const captures = pStats.captures || 0;
-                            const playtimeStr = formaterTempsJeu(pStats.playtime || 0);
+                            const captures = parseInt(pStats.captures) || 0;
+                            const playtimeStr = formaterTempsJeu(parseInt(pStats.playtime) || 0);
 
-                            const statsMsg = `📈 Session : ⚔️ ${kills} Kills | 💀 ${deaths} Morts | 📊 Ratio ${ratio} | 🚩 ${captures} Caps | 🕒 ${playtimeStr}`;
+                            const statsMsg = `Stats de session pour ${pStats.player_name} - Kills: ${kills} | Morts: ${deaths} | Ratio: ${ratio} | Captures: ${captures} | Temps: ${playtimeStr}`;
                             pendingCommands.push(`warn:${targetPlayer}:${statsMsg}`);
                         } else {
-                            pendingCommands.push(`warn:${targetPlayer}:Aucune donnée de session pour "${searchedName}" pour le moment.`);
+                            pendingCommands.push(`warn:${targetPlayer}:Aucune donnee de session pour "${searchedName}" pour le moment.`);
                         }
                     } catch (err) {
-                        console.error("❌ Erreur de récupération des stats de session :", err.message);
+                        console.error("❌ Erreur de recuperation des stats de session :", err.message);
                         pendingCommands.push(`warn:${targetPlayer}:Erreur de liaison satellite.`);
                     }
                 }

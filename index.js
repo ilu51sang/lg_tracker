@@ -90,6 +90,7 @@ let currentSessionId = null;
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || "LG_Admin_2026_#k9P$m3X!v8F";
 
 app.use(cors());
 app.use(express.json({ type: '*/*' }));
@@ -1403,7 +1404,7 @@ app.get('/api/players/:name', async (req, res) => {
 // --- ROUTES ADMIN POUR LES LOGS ET LES METRIQUES ---
 app.get('/api/admin/logs', async (req, res) => {
     const { password, limit, filter, search, startDate, endDate } = req.query;
-    if (password !== "admin") {
+    if (password !== ADMIN_PASSWORD) {
         return res.status(403).json({ error: "Mot de passe admin invalide" });
     }
     try {
@@ -1431,7 +1432,7 @@ app.get('/api/admin/logs', async (req, res) => {
 
 app.get('/api/admin/metrics', async (req, res) => {
     const { password, limit } = req.query;
-    if (password !== "admin") {
+    if (password !== ADMIN_PASSWORD) {
         return res.status(403).json({ error: "Mot de passe admin invalide" });
     }
     try {
@@ -1460,7 +1461,7 @@ app.get('/api/admin/metrics', async (req, res) => {
 // --- ROUTES ADMIN POUR LES PEAKS ET SANCTIONS GENERALES ---
 app.get('/api/admin/stats-summary', async (req, res) => {
     const { password } = req.query;
-    if (password !== "admin") {
+    if (password !== ADMIN_PASSWORD) {
         return res.status(403).json({ error: "Mot de passe admin invalide" });
     }
     try {
@@ -1475,7 +1476,7 @@ app.get('/api/admin/stats-summary', async (req, res) => {
 
 app.get('/api/admin/sanctions-history', async (req, res) => {
     const { password, limit } = req.query;
-    if (password !== "admin") {
+    if (password !== ADMIN_PASSWORD) {
         return res.status(403).json({ error: "Mot de passe admin invalide" });
     }
     try {
@@ -1492,7 +1493,7 @@ app.get('/api/admin/sanctions-history', async (req, res) => {
 // --- ROUTE ADMIN : QUEUE DES COMMANDES RCON ---
 app.post('/api/admin/command', async (req, res) => {
     const { password, action, target, message } = req.body;
-    if (password !== "admin") {
+    if (password !== ADMIN_PASSWORD) {
         return res.status(403).json({ error: "Mot de passe admin invalide" });
     }
 
@@ -1541,7 +1542,7 @@ function normaliserDate(dateVal) {
 // Profil complet d'un joueur
 app.get('/api/admin/player/:name', async (req, res) => {
     const { password } = req.query;
-    if (password !== "admin") {
+    if (password !== ADMIN_PASSWORD) {
         return res.status(403).json({ error: "Mot de passe admin invalide" });
     }
     try {
@@ -1566,7 +1567,7 @@ app.get('/api/admin/player/:name', async (req, res) => {
 // Ajouter une note
 app.post('/api/admin/notes', async (req, res) => {
     const { password, player_name, note } = req.body;
-    if (password !== "admin") {
+    if (password !== ADMIN_PASSWORD) {
         return res.status(403).json({ error: "Mot de passe admin invalide" });
     }
     if (!player_name || !note) {
@@ -1584,7 +1585,7 @@ app.post('/api/admin/notes', async (req, res) => {
 // Récupérer les notes d'un joueur
 app.get('/api/admin/notes/:player', async (req, res) => {
     const { password } = req.query;
-    if (password !== "admin") {
+    if (password !== ADMIN_PASSWORD) {
         return res.status(403).json({ error: "Mot de passe admin invalide" });
     }
     try {
@@ -1600,7 +1601,7 @@ app.get('/api/admin/notes/:player', async (req, res) => {
 // Récupérer la watchlist
 app.get('/api/admin/watchlist', async (req, res) => {
     const { password } = req.query;
-    if (password !== "admin") {
+    if (password !== ADMIN_PASSWORD) {
         return res.status(403).json({ error: "Mot de passe admin invalide" });
     }
     try {
@@ -1616,7 +1617,7 @@ app.get('/api/admin/watchlist', async (req, res) => {
 // Ajouter un joueur à la watchlist
 app.post('/api/admin/watchlist', async (req, res) => {
     const { password, player_name, reason } = req.body;
-    if (password !== "admin") {
+    if (password !== ADMIN_PASSWORD) {
         return res.status(403).json({ error: "Mot de passe admin invalide" });
     }
     if (!player_name) {
@@ -1634,7 +1635,7 @@ app.post('/api/admin/watchlist', async (req, res) => {
 // Retirer un joueur de la watchlist
 app.delete('/api/admin/watchlist/:player', async (req, res) => {
     const { password } = req.query;
-    if (password !== "admin") {
+    if (password !== ADMIN_PASSWORD) {
         return res.status(403).json({ error: "Mot de passe admin invalide" });
     }
     try {
@@ -1649,7 +1650,7 @@ app.delete('/api/admin/watchlist/:player', async (req, res) => {
 // Récupérer les sanctions d'un joueur
 app.get('/api/admin/sanctions/:player', async (req, res) => {
     const { password } = req.query;
-    if (password !== "admin") {
+    if (password !== ADMIN_PASSWORD) {
         return res.status(403).json({ error: "Mot de passe admin invalide" });
     }
     try {

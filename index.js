@@ -1278,6 +1278,40 @@ app.get('/api/leaderboard/weekly', async (req, res) => {
     }
 });
 
+// --- ROUTE D'INTRO CINÉMATIQUE POUR ARMA REFORGER ---
+app.get('/api/intro/:player', async (req, res) => {
+    try {
+        const playerName = req.params.player.trim();
+        const profile = await getPlayerProfile(playerName);
+        
+        let playtime = 0;
+        if (profile && profile.stats) {
+            playtime = profile.stats.playtime || 0;
+        }
+        
+        const hours = Math.floor(playtime / 3600);
+        
+        const dateObj = new Date();
+        const formattedDate = dateObj.toLocaleDateString('fr-FR', { day: 'numeric', month: 'long', year: 'numeric' }).toUpperCase();
+        const formattedTime = dateObj.toLocaleTimeString('fr-FR');
+        
+        const line1 = `${formattedDate} - ${formattedTime}`;
+        const line2 = `OPÉRATEUR : ${playerName.toUpperCase()}`;
+        const line3 = hours > 0 ? `TEMPS DE VOL : ${hours} HEURE${hours > 1 ? 'S' : ''}` : `STATUT : RECRUE INITIALE`;
+        const line4 = `LIAISON : SAT LINK GAULOIS-1`;
+        const line5 = `OPÉRATION : CLASSIFIÉE [EVERON]`;
+        
+        res.json({
+            player: playerName,
+            playtime_hours: hours,
+            lines: [line1, line2, line3, line4, line5]
+        });
+    } catch (err) {
+        console.error("❌ Erreur lors de la génération de l'intro :", err.message);
+        res.status(500).json({ error: err.message });
+    }
+});
+
 // --- ROUTE POUR LA FICHE PROFIL PUBLIQUE D'UN JOUEUR ---
 app.get('/api/players/:name', async (req, res) => {
     try {

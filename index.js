@@ -90,7 +90,7 @@ let currentSessionId = null;
 
 const app = express();
 const PORT = process.env.PORT || 3000;
-const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || "LG_Admin_2026_#k9P$m3X!v8F";
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || "LG_Admin2026#k9P$m3X!v8F";
 
 app.use(cors());
 app.use(express.json({ type: '*/*' }));
